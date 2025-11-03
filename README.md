@@ -21,6 +21,19 @@ I've also posted this on the Valve Steam Deck Community Forum under Feature Requ
 <a href="https://www.paypal.com/donate/?business=VSMP49KYGADT4&no_recurring=0&item_name=Your+donation+inspires+me+to+continue+research+on+the+Steam+Deck%21%0AClover+script%2C+70Hz+mod%2C+SteamOS+microSD%2C+Secure+Boot%2C+etc.%0A%0A&currency_code=CAD"> <img src="https://github.com/ryanrudolfoba/SteamDeck-Clover-dualboot/blob/main/QRCode.png"/> </a>
 </p>
 
+## IMPORTANT UPDATE - November 03 2025
+The guide was written 3yrs ago. Newer update to sbctl puts the generated custom keys in a different location.\
+Initially the custom keys are located in `/usr/share/secureboot/keys`. If you are using a newer sbctl then those keys will be on a different location!
+
+From the sbctl manpage -\
+<img width="1513" height="1019" alt="image" src="https://github.com/user-attachments/assets/b86a5019-ee8d-47be-832a-451ba009ae31" />
+
+The man page shows that the custom generated secure boot keys are located in - `/var/lib/sbctl/keys/custom`, but on my install they are located in `/var/lib/sbctl/keys` -\
+<img width="553" height="326" alt="image" src="https://github.com/user-attachments/assets/1c18993f-1b08-4c6a-9fc8-37bf915ee64a" />
+
+
+This is important when doing the revert steps!
+
 ## Disclaimer
 1. Do this at your own risk!
 2. Don't use Linux Live USB mode! Make sure you fully install a Linux distro not the Live USB mode!
