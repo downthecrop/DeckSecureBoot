@@ -1,3 +1,5 @@
+# WIP, DONT TRY THIS YET
+
 # Alpine Steam Deck Secure Boot ISO
 
 This repo describes how to build a small Alpine-based ISO (x86_64) that boots on **BIOS and UEFI** and already contains the tools used in the “Enable Secure Boot for Steam Deck” guide.
