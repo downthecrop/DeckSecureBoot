@@ -6,9 +6,8 @@ APK_REPO_COMM="https://dl-cdn.alpinelinux.org/alpine/edge/community"
 WORKDIR="/work"
 PROFILE_SCRIPT="mkimg.steamdeck-sb.sh"
 BUILDER_USER="builder"
-APKOVL="$WORKDIR/steamdeck-overlay.apkovl.tar.gz"
 
-echo "[+] starting build (with profile-defined apkovl)"
+echo "[+] starting build (profile-defined apkovl in builder's .mkimage)"
 
 # 1) deps
 if ! command -v git >/dev/null 2>&1; then
@@ -19,7 +18,7 @@ else
   echo "[=] base packages already present"
 fi
 
-# 2) abuild key (root)
+# 2) abuild key
 if [ ! -d /root/.abuild ] || ! ls /root/.abuild/*.rsa >/dev/null 2>&1; then
   echo "[+] generating abuild key..."
   abuild-keygen -a
@@ -50,13 +49,13 @@ fi
 # make sure /work is owned by builder
 chown -R "$BUILDER_USER":"$BUILDER_USER" "$WORKDIR"
 
-# 5) ALWAYS rebuild overlay
+# 5) build overlay (always)
 echo "[+] building overlay..."
-OVERLAY_DIR="$WORKDIR/overlay"
-rm -rf "$OVERLAY_DIR"
-mkdir -p "$OVERLAY_DIR/etc/profile.d" "$OVERLAY_DIR/etc"
+OVERLAY_BUILD_DIR="$WORKDIR/overlay"
+rm -rf "$OVERLAY_BUILD_DIR"
+mkdir -p "$OVERLAY_BUILD_DIR/etc/profile.d" "$OVERLAY_BUILD_DIR/etc"
 
-cat > "$OVERLAY_DIR/etc/inittab" <<'EOF'
+cat > "$OVERLAY_BUILD_DIR/etc/inittab" <<'EOF'
 ::sysinit:/sbin/openrc sysinit
 ::sysinit:/sbin/openrc boot
 ::wait:/sbin/openrc default
@@ -68,37 +67,46 @@ tty4::respawn:/sbin/getty 38400 tty4
 ::shutdown:/sbin/openrc shutdown
 EOF
 
-cat > "$OVERLAY_DIR/etc/profile.d/steamdeck-autoexec.sh" <<'EOF'
+cat > "$OVERLAY_BUILD_DIR/etc/profile.d/steamdeck-autoexec.sh" <<'EOF'
 #!/bin/sh
 echo "hello world from steamdeck alpine ISO"
 EOF
-chmod +x "$OVERLAY_DIR/etc/profile.d/steamdeck-autoexec.sh"
+chmod +x "$OVERLAY_BUILD_DIR/etc/profile.d/steamdeck-autoexec.sh"
 
+# create the actual tar.gz
+APKOVL_NAME="steamdeck-overlay.apkovl.tar.gz"
+APKOVL_PATH="$OVERLAY_BUILD_DIR/$APKOVL_NAME"
 (
-  cd "$OVERLAY_DIR"
-  tar -czf "$APKOVL" .
+  cd "$OVERLAY_BUILD_DIR"
+  tar -czf "$APKOVL_NAME" .
 )
 
-# 6) write profile that points at the overlay
+# 6) put the apkovl where mkimage expects it (builder's ~/.mkimage)
+echo "[+] staging apkovl into /home/$BUILDER_USER/.mkimage/"
+mkdir -p /home/$BUILDER_USER/.mkimage
+cp "$APKOVL_PATH" /home/$BUILDER_USER/.mkimage/
+chown -R $BUILDER_USER:$BUILDER_USER /home/$BUILDER_USER/.mkimage
+
+# 7) write profile that just names the apkovl (no path)
 PROFILE_PATH="$WORKDIR/aports/scripts/$PROFILE_SCRIPT"
 echo "[+] writing profile to $PROFILE_PATH"
 cat > "$PROFILE_PATH" <<EOF
 profile_steamdeck_sb() {
     profile_standard
     apks="\$apks sbctl efitools mokutil e2fsprogs-extra git"
-    apkovl="$APKOVL"
+    apkovl="$APKOVL_NAME"
 }
 profile_steamdeck_sb
 EOF
 
-# 7) copy the signing key to builder *as root* so builder can use it
+# 8) copy abuild keys to builder (so modloop can be signed)
 echo "[+] copying abuild keys to builder..."
 mkdir -p /home/$BUILDER_USER/.abuild
 cp /root/.abuild/*.rsa /home/$BUILDER_USER/.abuild/
 cp /root/.abuild/*.pub /home/$BUILDER_USER/.abuild/
 chown -R $BUILDER_USER:$BUILDER_USER /home/$BUILDER_USER/.abuild
 
-# 8) run mkimage as builder
+# 9) run mkimage as builder
 echo "[+] building ISO as $BUILDER_USER..."
 su - "$BUILDER_USER" <<EOF
 set -e
