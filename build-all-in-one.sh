@@ -2,18 +2,18 @@
 set -euo pipefail
 
 # ---------------------------------------------------------------------------
-# Steam Deck Secure Boot ISO builder
+# Steam Deck Secure Boot ISO builder (plain ncurses)
 #
-# - based on Archiso baseline
-# - trims packages, adds sbctl + helpers
-# - ships our PK/KEK/db
-# - prepares sbctl in the *new* layout that recent sbctl expects:
-#     /var/lib/sbctl/GUID
-#     /var/lib/sbctl/keys/{PK,KEK,db}/...
-#   so the archiso chroot hook can sign without "old configuration" warnings.
-# - also keeps a copy at /usr/share/deck-sb/keys for our own scripts
-# - dialog UI forced to black + cyan
-# - fixed Deck GUID: decdecde-dec0-4dec-adec-decdecdecdec
+# - Based on Archiso baseline
+# - UEFI + systemd-boot only
+# - Adds sbctl + efitools + mokutil + our baked keys
+# - Puts sbctl data in the NEW layout inside the ISO:
+#       /var/lib/sbctl/GUID
+#       /var/lib/sbctl/keys/{PK,KEK,db}/...
+#   so archiso’s own sbctl hook can sign without saying “old configuration”
+# - Also keeps a copy of the keys at /usr/share/deck-sb/keys for our own scripts
+# - Boots straight into /root/menu.sh (plain dialog defaults)
+# - Fixed sbctl GUID: decdecde-dec0-4dec-adec-decdecdecdec
 # ---------------------------------------------------------------------------
 
 WORKDIR=${WORKDIR:-/root/archlive}
@@ -47,7 +47,7 @@ echo "[+] Steam Deck SB ISO build"
 echo "[+] workdir: $WORKDIR"
 
 # ---------------------------------------------------------------------------
-# 1) make sure we have archiso + deps on the host
+# 1) install host deps if missing
 # ---------------------------------------------------------------------------
 if ! pacman -Qi archiso >/dev/null 2>&1; then
   pacman -Sy --noconfirm archiso
@@ -60,7 +60,7 @@ if ! pacman -Qi sbctl >/dev/null 2>&1; then
 fi
 
 # ---------------------------------------------------------------------------
-# 2) fresh profile from baseline
+# 2) prepare working profile
 # ---------------------------------------------------------------------------
 mkdir -p "$WORKDIR"
 cd "$WORKDIR"
@@ -69,7 +69,7 @@ cp -r "$PROFILE_SRC" "$PROFILENAME"
 cd "$PROFILENAME"
 
 # ---------------------------------------------------------------------------
-# 3) profiledef: uefi.systemd-boot only
+# 3) profiledef
 # ---------------------------------------------------------------------------
 cat > profiledef.sh <<'EOF'
 #!/usr/bin/env bash
@@ -104,7 +104,7 @@ file_permissions=(
 EOF
 
 # ---------------------------------------------------------------------------
-# 4) trim / add packages
+# 4) package trimming / adding
 # ---------------------------------------------------------------------------
 tmpfile=$(mktemp)
 cp packages.x86_64 "$tmpfile"
@@ -119,7 +119,7 @@ for pkg in "${ISO_UNWANTED_PKGS[@]}"; do
   mv "${tmpfile}.1" "$tmpfile"
 done
 
-# add wanted
+# add desired
 for pkg in "${ISO_EXTRA_PKGS[@]}"; do
   if ! grep -qx "$pkg" "$tmpfile"; then
     echo "$pkg" >> "$tmpfile"
@@ -129,7 +129,7 @@ done
 mv "$tmpfile" packages.x86_64
 
 # ---------------------------------------------------------------------------
-# 5) systemd-boot loader
+# 5) UEFI/systemd-boot
 # ---------------------------------------------------------------------------
 mkdir -p efiboot/loader/entries
 cat > efiboot/loader/entries/archiso-x86_64.conf <<'EOF'
@@ -146,7 +146,7 @@ if [ -f /usr/lib/systemd/boot/efi/systemd-bootx64.efi ]; then
   cp /usr/lib/systemd/boot/efi/systemd-bootx64.efi efiboot/EFI/systemd/systemd-bootx64.efi
   cp /usr/lib/systemd/boot/efi/systemd-bootx64.efi efiboot/EFI/BOOT/BOOTX64.EFI
 else
-  echo "[!] /usr/lib/systemd/boot/efi/systemd-bootx64.efi not found on host"
+  echo "[!] /usr/lib/systemd/boot/efi/systemd-bootx64.efi not found on host; ISO will still build."
 fi
 
 # ---------------------------------------------------------------------------
@@ -162,9 +162,9 @@ exit 0
 EOF
 
 # ---------------------------------------------------------------------------
-# 7) baked keys (PK = KEK = db)
-#    - keep a copy in /usr/share/deck-sb/keys (for our scripts)
-#    - install the *new-style* sbctl layout in /var/lib/sbctl/...
+# 7) baked keys
+#    - keep copy in /usr/share/deck-sb/keys
+#    - ALSO pre-create /var/lib/sbctl/* (new layout) so archiso’s sbctl hook is happy
 # ---------------------------------------------------------------------------
 mkdir -p airootfs/usr/share/deck-sb/keys
 mkdir -p airootfs/var/lib/sbctl/keys/PK
@@ -224,13 +224,13 @@ OyHXIWSLcl2GuAJnBoSR3rKgFvvr
 -----END CERTIFICATE-----
 EOF
 
-# mirror into KEK/db for our tree
+# mirror to KEK/db for our copy
 cp airootfs/usr/share/deck-sb/keys/PK.key  airootfs/usr/share/deck-sb/keys/KEK.key
 cp airootfs/usr/share/deck-sb/keys/PK.pem  airootfs/usr/share/deck-sb/keys/KEK.pem
 cp airootfs/usr/share/deck-sb/keys/PK.key  airootfs/usr/share/deck-sb/keys/db.key
 cp airootfs/usr/share/deck-sb/keys/PK.pem  airootfs/usr/share/deck-sb/keys/db.pem
 
-# now copy into the *new* sbctl path that the archiso hook uses
+# and copy to NEW sbctl layout so the chroot hook can use them
 cp airootfs/usr/share/deck-sb/keys/PK.key  airootfs/var/lib/sbctl/keys/PK/PK.key
 cp airootfs/usr/share/deck-sb/keys/PK.pem  airootfs/var/lib/sbctl/keys/PK/PK.pem
 cp airootfs/usr/share/deck-sb/keys/KEK.key airootfs/var/lib/sbctl/keys/KEK/KEK.key
@@ -238,7 +238,7 @@ cp airootfs/usr/share/deck-sb/keys/KEK.pem airootfs/var/lib/sbctl/keys/KEK/KEK.p
 cp airootfs/usr/share/deck-sb/keys/db.key  airootfs/var/lib/sbctl/keys/db/db.key
 cp airootfs/usr/share/deck-sb/keys/db.pem  airootfs/var/lib/sbctl/keys/db/db.pem
 
-# write GUID in new spot so hook is happy
+# fixed Deck GUID (new sbctl layout)
 echo -n "decdecde-dec0-4dec-adec-decdecdecdec" > airootfs/var/lib/sbctl/GUID
 
 # ---------------------------------------------------------------------------
@@ -246,6 +246,7 @@ echo -n "decdecde-dec0-4dec-adec-decdecdecdec" > airootfs/var/lib/sbctl/GUID
 # ---------------------------------------------------------------------------
 mkdir -p airootfs/usr/local/sbin
 
+# enroll
 cat > airootfs/usr/local/sbin/deck-enroll.sh <<'EOF'
 #!/bin/bash
 set -e
@@ -281,6 +282,7 @@ echo "Keys enrolled (ours + Microsoft). Reboot to apply."
 EOF
 chmod +x airootfs/usr/local/sbin/deck-enroll.sh
 
+# unenroll
 cat > airootfs/usr/local/sbin/deck-unenroll.sh <<'EOF'
 #!/bin/bash
 set -e
@@ -305,9 +307,11 @@ fi
 EOF
 chmod +x airootfs/usr/local/sbin/deck-unenroll.sh
 
+# sign SteamOS / Deck loader
 cat > airootfs/usr/local/sbin/deck-sign-steamos.sh <<'EOF'
 #!/bin/bash
 set -e
+
 CAND=()
 
 scan() {
@@ -354,9 +358,11 @@ echo "Done."
 EOF
 chmod +x airootfs/usr/local/sbin/deck-sign-steamos.sh
 
+# sign arbitrary EFI
 cat > airootfs/usr/local/sbin/deck-sign-efi.sh <<'EOF'
 #!/bin/bash
 set -e
+
 ROOTS=(/boot /boot/efi /efi /mnt)
 ALL=()
 for r in "${ROOTS[@]}"; do
@@ -404,31 +410,10 @@ EOF
 chmod +x airootfs/usr/local/sbin/deck-sign-efi.sh
 
 # ---------------------------------------------------------------------------
-# 9) dialog menu – black + cyan (no grey)
+# 9) menu.sh – now plain dialog, no .dialogrc, no color overrides
 # ---------------------------------------------------------------------------
 cat > airootfs/root/menu.sh <<'EOF'
 #!/bin/bash
-
-DIALOGRC=/root/.dialogrc
-export DIALOGRC
-if [ ! -f "$DIALOGRC" ]; then
-  cat >"$DIALOGRC" <<'RC'
-use_shadow = OFF
-use_colors = ON
-screen_color          = (BLACK,BLACK,OFF)
-dialog_color          = (BLACK,BLACK,OFF)
-menubox_color         = (BLACK,BLACK,OFF)
-menubox_border_color  = (CYAN,BLACK,ON)
-border_color          = (CYAN,BLACK,ON)
-title_color           = (WHITE,BLACK,ON)
-item_color            = (WHITE,BLACK,OFF)
-item_selected_color   = (BLACK,CYAN,ON)
-tag_color             = (CYAN,BLACK,OFF)
-tag_selected_color    = (BLACK,CYAN,ON)
-button_inactive_color = (WHITE,BLACK,OFF)
-button_active_color   = (BLACK,CYAN,ON)
-RC
-fi
 
 pending_flag() {
   [ -f /run/sb_pending_reboot ] && echo " (pending reboot)" || echo ""
@@ -577,7 +562,7 @@ EOF
 chmod +x airootfs/root/customize_airootfs.sh
 
 # ---------------------------------------------------------------------------
-# 11) build
+# 11) build ISO
 # ---------------------------------------------------------------------------
 if [ -d /out ]; then
   ISO_OUT_DIR=/out
