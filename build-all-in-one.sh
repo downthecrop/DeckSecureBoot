@@ -1,14 +1,25 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# ============================================================================
-# CONFIG
-# ============================================================================
+# ---------------------------------------------------------------------------
+# Steam Deck Secure Boot ISO builder
+#
+# - based on Archiso baseline
+# - trims packages, adds sbctl + helpers
+# - ships our PK/KEK/db
+# - prepares sbctl in the *new* layout that recent sbctl expects:
+#     /var/lib/sbctl/GUID
+#     /var/lib/sbctl/keys/{PK,KEK,db}/...
+#   so the archiso chroot hook can sign without "old configuration" warnings.
+# - also keeps a copy at /usr/share/deck-sb/keys for our own scripts
+# - dialog UI forced to black + cyan
+# - fixed Deck GUID: decdecde-dec0-4dec-adec-decdecdecdec
+# ---------------------------------------------------------------------------
+
 WORKDIR=${WORKDIR:-/root/archlive}
 PROFILENAME=${PROFILENAME:-steamdeck-sb}
 PROFILE_SRC=/usr/share/archiso/configs/baseline
 
-# packages we explicitly want inside the ISO
 ISO_EXTRA_PKGS=(
   sbctl
   efitools
@@ -22,56 +33,44 @@ ISO_EXTRA_PKGS=(
   linux-firmware-amdgpu
 )
 
-# packages we don't want
 ISO_UNWANTED_PKGS=(
-  # networking / wifi / vpn
   dhcpcd iproute2 iputils iwd wpa_supplicant openvpn openconnect vpnc pptpclient ppp xl2tpd
   nbd nfs-utils usb_modeswitch modemmanager wireless-regdb wireless_tools wvdial
-  # cloud / misc net helpers
   cloud-init reflector sshfs lftp
-  # no git / text browser
   git lynx
-  # VM / guest additions
   qemu-guest-agent open-vm-tools hyperv virtualbox-guest-utils-nox
-  # boot extras we don't need
   memtest86+ memtest86+-efi edk2-shell
-  # shell / live fluff
   zsh grml-zsh-config livecd-sounds terminus-font
 )
 
-echo "[+] Steam Deck Secure Boot ISO builder (hardcoded keys + MS db + deck theme)"
+echo "[+] Steam Deck SB ISO build"
 echo "[+] workdir: $WORKDIR"
 
-# ============================================================================
-# 1) install archiso + grub on host
-# ============================================================================
+# ---------------------------------------------------------------------------
+# 1) make sure we have archiso + deps on the host
+# ---------------------------------------------------------------------------
 if ! pacman -Qi archiso >/dev/null 2>&1; then
-  echo "[+] installing archiso..."
   pacman -Sy --noconfirm archiso
 fi
 if ! pacman -Qi grub >/dev/null 2>&1; then
-  echo "[+] installing grub..."
   pacman -Sy --noconfirm grub
 fi
-
-# ============================================================================
-# 2) prepare fresh profile from baseline
-# ============================================================================
-mkdir -p "$WORKDIR"
-cd "$WORKDIR"
-
-if [ -d "$PROFILENAME" ]; then
-  echo "[+] removing old profile $PROFILENAME"
-  rm -rf "$PROFILENAME"
+if ! pacman -Qi sbctl >/dev/null 2>&1; then
+  pacman -Sy --noconfirm sbctl
 fi
 
-echo "[+] copying baseline -> $PROFILENAME"
+# ---------------------------------------------------------------------------
+# 2) fresh profile from baseline
+# ---------------------------------------------------------------------------
+mkdir -p "$WORKDIR"
+cd "$WORKDIR"
+rm -rf "$PROFILENAME" || true
 cp -r "$PROFILE_SRC" "$PROFILENAME"
 cd "$PROFILENAME"
 
-# ============================================================================
-# 3) profiledef.sh: UEFI-only, xz, perms
-# ============================================================================
+# ---------------------------------------------------------------------------
+# 3) profiledef: uefi.systemd-boot only
+# ---------------------------------------------------------------------------
 cat > profiledef.sh <<'EOF'
 #!/usr/bin/env bash
 # shellcheck disable=SC2034
@@ -104,15 +103,13 @@ file_permissions=(
 )
 EOF
 
-# ============================================================================
-# 4) trim packages.x86_64
-# ============================================================================
-echo "[+] trimming packages.x86_64"
-
+# ---------------------------------------------------------------------------
+# 4) trim / add packages
+# ---------------------------------------------------------------------------
 tmpfile=$(mktemp)
 cp packages.x86_64 "$tmpfile"
 
-# drop monolithic firmware
+# drop big firmware
 grep -vx 'linux-firmware' "$tmpfile" > "${tmpfile}.1" || true
 mv "${tmpfile}.1" "$tmpfile"
 
@@ -131,9 +128,9 @@ done
 
 mv "$tmpfile" packages.x86_64
 
-# ============================================================================
-# 5) rotate console for Deck
-# ============================================================================
+# ---------------------------------------------------------------------------
+# 5) systemd-boot loader
+# ---------------------------------------------------------------------------
 mkdir -p efiboot/loader/entries
 cat > efiboot/loader/entries/archiso-x86_64.conf <<'EOF'
 title   Arch Linux (Steam Deck SB)
@@ -144,56 +141,35 @@ initrd  /%INSTALL_DIR%/boot/x86_64/initramfs-linux.img
 options archisobasedir=%INSTALL_DIR% archiso_locale=en_US.UTF-8 archiso_keyboard=us fbcon=rotate:1
 EOF
 
-# ============================================================================
-# 6) write airootfs base files
-# ============================================================================
-echo "[+] writing airootfs/root/runme.sh"
+mkdir -p efiboot/EFI/systemd efiboot/EFI/BOOT
+if [ -f /usr/lib/systemd/boot/efi/systemd-bootx64.efi ]; then
+  cp /usr/lib/systemd/boot/efi/systemd-bootx64.efi efiboot/EFI/systemd/systemd-bootx64.efi
+  cp /usr/lib/systemd/boot/efi/systemd-bootx64.efi efiboot/EFI/BOOT/BOOTX64.EFI
+else
+  echo "[!] /usr/lib/systemd/boot/efi/systemd-bootx64.efi not found on host"
+fi
+
+# ---------------------------------------------------------------------------
+# 6) airootfs startup
+# ---------------------------------------------------------------------------
 mkdir -p airootfs/root
 cat > airootfs/root/runme.sh <<'EOF'
 #!/bin/bash
 set -e
-echo "=== Steam Deck Secure Boot live startup ==="
-date
 echo "deck-sb" > /etc/hostname
 echo "ran on $(date)" > /root/ran.log
 exit 0
 EOF
 
-# ============================================================================
-# 7) theme for dialog (/root/.dialogrc)
-# ============================================================================
-echo "[+] writing airootfs/root/.dialogrc (deck colors)"
-cat > airootfs/root/.dialogrc <<'EOF'
-use_shadow = no
-use_colors = yes
-
-screen_color = black/black
-dialog_color = white/black
-title_color = white/black
-border_color = white/black
-
-item_color = white/black
-item_selected_color = black/cyan
-tag_color = white/black
-tag_selected_color = black/cyan
-
-button_active_color = black/cyan
-button_inactive_color = white/black
-button_key_color = white/black
-button_label_color = white/black
-
-textbox_color = white/black
-inputbox_color = white/black
-searchbox_color = white/black
-searchbox_title_color = white/black
-searchbox_border_color = white/black
-EOF
-
-# ============================================================================
-# 8) hardcoded keys (same for PK/KEK/db)
-# ============================================================================
-echo "[+] writing hardcoded keys into airootfs"
+# ---------------------------------------------------------------------------
+# 7) baked keys (PK = KEK = db)
+#    - keep a copy in /usr/share/deck-sb/keys (for our scripts)
+#    - install the *new-style* sbctl layout in /var/lib/sbctl/...
+# ---------------------------------------------------------------------------
 mkdir -p airootfs/usr/share/deck-sb/keys
+mkdir -p airootfs/var/lib/sbctl/keys/PK
+mkdir -p airootfs/var/lib/sbctl/keys/KEK
+mkdir -p airootfs/var/lib/sbctl/keys/db
 
 cat > airootfs/usr/share/deck-sb/keys/PK.key <<'EOF'
 -----BEGIN PRIVATE KEY-----
@@ -248,35 +224,43 @@ OyHXIWSLcl2GuAJnBoSR3rKgFvvr
 -----END CERTIFICATE-----
 EOF
 
-# reuse for KEK and db
+# mirror into KEK/db for our tree
 cp airootfs/usr/share/deck-sb/keys/PK.key  airootfs/usr/share/deck-sb/keys/KEK.key
 cp airootfs/usr/share/deck-sb/keys/PK.pem  airootfs/usr/share/deck-sb/keys/KEK.pem
 cp airootfs/usr/share/deck-sb/keys/PK.key  airootfs/usr/share/deck-sb/keys/db.key
 cp airootfs/usr/share/deck-sb/keys/PK.pem  airootfs/usr/share/deck-sb/keys/db.pem
 
-# ============================================================================
-# 9) helper: enroll (ours + Microsoft) and mark pending reboot
-# ============================================================================
-echo "[+] writing airootfs/usr/local/sbin/deck-enroll.sh"
+# now copy into the *new* sbctl path that the archiso hook uses
+cp airootfs/usr/share/deck-sb/keys/PK.key  airootfs/var/lib/sbctl/keys/PK/PK.key
+cp airootfs/usr/share/deck-sb/keys/PK.pem  airootfs/var/lib/sbctl/keys/PK/PK.pem
+cp airootfs/usr/share/deck-sb/keys/KEK.key airootfs/var/lib/sbctl/keys/KEK/KEK.key
+cp airootfs/usr/share/deck-sb/keys/KEK.pem airootfs/var/lib/sbctl/keys/KEK/KEK.pem
+cp airootfs/usr/share/deck-sb/keys/db.key  airootfs/var/lib/sbctl/keys/db/db.key
+cp airootfs/usr/share/deck-sb/keys/db.pem  airootfs/var/lib/sbctl/keys/db/db.pem
+
+# write GUID in new spot so hook is happy
+echo -n "decdecde-dec0-4dec-adec-decdecdecdec" > airootfs/var/lib/sbctl/GUID
+
+# ---------------------------------------------------------------------------
+# 8) helper scripts (enroll/unenroll/sign)
+# ---------------------------------------------------------------------------
 mkdir -p airootfs/usr/local/sbin
+
 cat > airootfs/usr/local/sbin/deck-enroll.sh <<'EOF'
 #!/bin/bash
 set -e
 
 KEYDIR="/usr/share/deck-sb/keys"
-NEEDED=(PK.key PK.pem KEK.key KEK.pem db.key db.pem)
+FIXED_GUID="decdecde-dec0-4dec-adec-decdecdecdec"
 
-for f in "${NEEDED[@]}"; do
-  if [ ! -f "$KEYDIR/$f" ]; then
-    echo "Missing $KEYDIR/$f"
-    exit 1
-  fi
+for f in PK.key PK.pem KEK.key KEK.pem db.key db.pem; do
+  [ -f "$KEYDIR/$f" ] || { echo "missing $KEYDIR/$f"; exit 1; }
 done
 
-if [ ! -d /sys/firmware/efi/efivars ]; then
-  echo "Not booted via UEFI or efivars not mounted."
-  exit 1
-fi
+[ -d /sys/firmware/efi/efivars ] || { echo "UEFI/efivars not present"; exit 1; }
+
+mkdir -p /var/lib/sbctl
+echo -n "$FIXED_GUID" > /var/lib/sbctl/GUID
 
 mkdir -p /var/lib/sbctl/keys/PK /var/lib/sbctl/keys/KEK /var/lib/sbctl/keys/db
 cp "$KEYDIR/PK.key"  /var/lib/sbctl/keys/PK/PK.key
@@ -288,166 +272,128 @@ cp "$KEYDIR/db.pem"  /var/lib/sbctl/keys/db/db.pem
 
 chattr -i /sys/firmware/efi/efivars/{PK,KEK,db}* 2>/dev/null || true
 
-# add MS db too
 sbctl enroll-keys -m
 
-# mark "pending reboot" so UI can show it
 mkdir -p /run
-echo "pending" > /run/sb_pending_reboot
+echo pending > /run/sb_pending_reboot
 
-echo "Keys enrolled (our PK/KEK/db + Microsoft). Reboot to enable Secure Boot."
+echo "Keys enrolled (ours + Microsoft). Reboot to apply."
 EOF
+chmod +x airootfs/usr/local/sbin/deck-enroll.sh
 
-# ============================================================================
-# 10) helper: unenroll (mark pending) 
-# ============================================================================
-echo "[+] writing airootfs/usr/local/sbin/deck-unenroll.sh"
 cat > airootfs/usr/local/sbin/deck-unenroll.sh <<'EOF'
 #!/bin/bash
 set -e
 
 KEYDIR="/usr/share/deck-sb/keys"
-if [ ! -d /sys/firmware/efi/efivars ]; then
-  echo "Not booted via UEFI or efivars not mounted."
-  exit 1
-fi
+[ -d /sys/firmware/efi/efivars ] || { echo "UEFI/efivars not present"; exit 1; }
 
 chattr -i /sys/firmware/efi/efivars/{PK,KEK,db}* 2>/dev/null || true
 
-efi-updatevar -d 0 -k "$KEYDIR/PK.key" PK || true
-efi-updatevar -d 0 -k "$KEYDIR/KEK.key" KEK || true
-efi-updatevar -d 0 -k "$KEYDIR/db.key" db || true
-efi-updatevar -d 0 -k "$KEYDIR/db.key" db || true
+CHANGED=0
+if efi-updatevar -d 0 -k "$KEYDIR/PK.key" PK 2>/dev/null; then CHANGED=1; fi
+if efi-updatevar -d 0 -k "$KEYDIR/KEK.key" KEK 2>/dev/null; then CHANGED=1; fi
+if efi-updatevar -d 0 -k "$KEYDIR/db.key" db 2>/dev/null; then CHANGED=1; fi
 
-mkdir -p /run
-echo "pending" > /run/sb_pending_reboot
-
-echo "Secure Boot vars cleared (or attempted). Reboot to confirm."
+if [ "$CHANGED" -eq 1 ]; then
+  mkdir -p /run
+  echo pending > /run/sb_pending_reboot
+  echo "Secure Boot vars cleared. Reboot to confirm."
+else
+  echo "No Secure Boot vars were cleared (nothing changed)."
+fi
 EOF
+chmod +x airootfs/usr/local/sbin/deck-unenroll.sh
 
-# ============================================================================
-# 11) helper: sign SteamOS / Deck-ish
-# ============================================================================
-echo "[+] writing airootfs/usr/local/sbin/deck-sign-steamos.sh"
 cat > airootfs/usr/local/sbin/deck-sign-steamos.sh <<'EOF'
 #!/bin/bash
 set -e
+CAND=()
 
-CANDIDATES=()
-
-add_candidates_from() {
+scan() {
   local base="$1"
   [ -d "$base" ] || return 0
-  while IFS= read -r -d '' f; do
-    CANDIDATES+=("$f")
-  done < <(find "$base" -maxdepth 5 -type f \( -iname "steamcl.efi" -o -iname "*.efi" \) -print0 2>/dev/null)
+  while IFS= read -r -d '' f; do CAND+=("$f"); done \
+    < <(find "$base" -maxdepth 5 -type f \( -iname "steamcl.efi" -o -iname "*.efi" \) -print0 2>/dev/null)
 }
 
-add_candidates_from /boot
-add_candidates_from /boot/efi
-add_candidates_from /efi
-add_candidates_from /mnt
+scan /boot
+scan /boot/efi
+scan /efi
+scan /mnt
 
-# push typical SteamOS paths to front
-for p in \
-  /boot/efi/EFI/steamos/steamcl.efi \
-  /boot/efi/EFI/STEAMOS/steamcl.efi \
-  /boot/efi/EFI/BOOT/BOOTX64.EFI; do
-  [ -f "$p" ] && CANDIDATES=("$p" "${CANDIDATES[@]}")
+for p in /boot/efi/EFI/steamos/steamcl.efi /boot/efi/EFI/STEAMOS/steamcl.efi /boot/efi/EFI/BOOT/BOOTX64.EFI; do
+  [ -f "$p" ] && CAND=("$p" "${CAND[@]}")
 done
 
-mapfile -t CANDIDATES < <(printf "%s\n" "${CANDIDATES[@]}" | awk '!seen[$0]++')
+mapfile -t CAND < <(printf "%s\n" "${CAND[@]}" | awk '!seen[$0]++')
 
-if ! command -v sbctl >/dev/null 2>&1; then
-  echo "sbctl not found"
-  exit 1
-fi
+command -v sbctl >/dev/null 2>&1 || { echo "sbctl not found"; exit 1; }
 
-if [ "${#CANDIDATES[@]}" -eq 0 ]; then
-  echo "No SteamOS/EFI loaders found. Mount ESP and try again."
+if [ "${#CAND[@]}" -eq 0 ]; then
+  echo "No SteamOS/EFI loaders found."
   exit 1
 fi
 
 if command -v dialog >/dev/null 2>&1; then
-  MENU_ITEMS=()
+  MENU=()
   i=1
-  for c in "${CANDIDATES[@]}"; do
-    MENU_ITEMS+=("$i" "$c")
+  for c in "${CAND[@]}"; do
+    MENU+=("$i" "$c")
     i=$((i+1))
   done
-  CHOICE=$(dialog --stdout --menu "Select SteamOS/EFI loader to sign" 0 0 0 "${MENU_ITEMS[@]}")
-  [ -z "$CHOICE" ] && exit 0
-  TARGET="${CANDIDATES[$((CHOICE-1))]}"
+  CHOICE=$(dialog --stdout --menu "Select SteamOS/EFI loader to sign" 0 0 0 "${MENU[@]}") || exit 0
+  TARGET="${CAND[$((CHOICE-1))]}"
 else
-  TARGET="${CANDIDATES[0]}"
+  TARGET="${CAND[0]}"
 fi
 
 echo "Signing: $TARGET"
 sbctl sign -s "$TARGET"
-echo "Done. If this is your first time with SB, this was required."
+echo "Done."
 EOF
+chmod +x airootfs/usr/local/sbin/deck-sign-steamos.sh
 
-# ============================================================================
-# 12) helper: generic EFI signer (warn on Windows but allow)
-# ============================================================================
-echo "[+] writing airootfs/usr/local/sbin/deck-sign-efi.sh"
 cat > airootfs/usr/local/sbin/deck-sign-efi.sh <<'EOF'
 #!/bin/bash
 set -e
-
-SEARCH_ROOTS=(/boot /boot/efi /efi /mnt)
-
-CANDS=()
-for r in "${SEARCH_ROOTS[@]}"; do
+ROOTS=(/boot /boot/efi /efi /mnt)
+ALL=()
+for r in "${ROOTS[@]}"; do
   [ -d "$r" ] || continue
-  while IFS= read -r -d '' f; do
-    CANDS+=("$f")
-  done < <(find "$r" -maxdepth 6 -type f -iname "*.efi" -print0 2>/dev/null)
+  while IFS= read -r -d '' f; do ALL+=("$f"); done \
+    < <(find "$r" -maxdepth 6 -type f -iname "*.efi" -print0 2>/dev/null)
 done
+mapfile -t ALL < <(printf "%s\n" "${ALL[@]}" | awk '!seen[$0]++')
 
-mapfile -t CANDS < <(printf "%s\n" "${CANDS[@]}" | awk '!seen[$0]++')
-
-if ! command -v sbctl >/dev/null 2>&1; then
-  echo "sbctl not found"
-  exit 1
-fi
-
-if [ "${#CANDS[@]}" -eq 0 ]; then
-  echo "No EFI binaries found. Mount the partition where the other OS lives and try again."
-  exit 1
-fi
+command -v sbctl >/dev/null 2>&1 || { echo "sbctl not found"; exit 1; }
+[ "${#ALL[@]}" -gt 0 ] || { echo "No EFI files found."; exit 1; }
 
 if command -v dialog >/dev/null 2>&1; then
-  MENU_ITEMS=()
-  idx=1
-  for c in "${CANDS[@]}"; do
-    MENU_ITEMS+=("$idx" "$c")
-    idx=$((idx+1))
+  MENU=()
+  i=1
+  for c in "${ALL[@]}"; do
+    MENU+=("$i" "$c")
+    i=$((i+1))
   done
-  CHOICE=$(dialog --stdout --menu "Select EFI to sign (other Linuxes etc)" 0 0 0 "${MENU_ITEMS[@]}")
-  [ -z "$CHOICE" ] && exit 0
-  TARGET="${CANDS[$((CHOICE-1))]}"
+  CHOICE=$(dialog --stdout --menu "Select EFI to sign (Windows will warn)" 0 0 0 "${MENU[@]}") || exit 0
+  TARGET="${ALL[$((CHOICE-1))]}"
 else
-  TARGET="${CANDS[0]}"
+  TARGET="${ALL[0]}"
 fi
 
 IS_WIN=0
 case "$TARGET" in
   */EFI/Microsoft/Boot/*|*/efi/microsoft/boot/*|*/bootmgfw.efi|*/BOOTMGFW.EFI)
-    IS_WIN=1
-    ;;
+    IS_WIN=1 ;;
 esac
 
 if [ "$IS_WIN" -eq 1 ]; then
   if command -v dialog >/dev/null 2>&1; then
-    dialog --yesno "This looks like a Windows EFI loader.\nWindows already trusts Microsoft keys, so signing this is not usually recommended.\nContinue anyway?" 12 70 || exit 0
+    dialog --yesno "This looks like a Windows EFI loader.\nWindows already trusts Microsoft keys.\nContinue anyway?" 12 60 || exit 0
   else
-    echo "WARNING: This looks like Windows EFI. Normally you don't sign this. Continue? [y/N]"
-    read -r ans
-    case "$ans" in
-      y|Y) ;;
-      *) exit 0 ;;
-    esac
+    read -r -p "This looks like Windows EFI. Continue? [y/N] " ans
+    [[ "$ans" =~ ^[Yy]$ ]] || exit 0
   fi
 fi
 
@@ -455,93 +401,101 @@ echo "Signing: $TARGET"
 sbctl sign -s "$TARGET"
 echo "Done."
 EOF
+chmod +x airootfs/usr/local/sbin/deck-sign-efi.sh
 
-# ============================================================================
-# 13) dialog menu (updated order + pending status)
-# ============================================================================
-echo "[+] writing airootfs/root/menu.sh"
+# ---------------------------------------------------------------------------
+# 9) dialog menu – black + cyan (no grey)
+# ---------------------------------------------------------------------------
 cat > airootfs/root/menu.sh <<'EOF'
 #!/bin/bash
-set -e
-export DIALOGRC=/root/.dialogrc
+
+DIALOGRC=/root/.dialogrc
+export DIALOGRC
+if [ ! -f "$DIALOGRC" ]; then
+  cat >"$DIALOGRC" <<'RC'
+use_shadow = OFF
+use_colors = ON
+screen_color          = (BLACK,BLACK,OFF)
+dialog_color          = (BLACK,BLACK,OFF)
+menubox_color         = (BLACK,BLACK,OFF)
+menubox_border_color  = (CYAN,BLACK,ON)
+border_color          = (CYAN,BLACK,ON)
+title_color           = (WHITE,BLACK,ON)
+item_color            = (WHITE,BLACK,OFF)
+item_selected_color   = (BLACK,CYAN,ON)
+tag_color             = (CYAN,BLACK,OFF)
+tag_selected_color    = (BLACK,CYAN,ON)
+button_inactive_color = (WHITE,BLACK,OFF)
+button_active_color   = (BLACK,CYAN,ON)
+RC
+fi
 
 pending_flag() {
-  if [ -f /run/sb_pending_reboot ]; then
-    echo " (pending reboot)"
-  else
-    echo ""
-  fi
+  [ -f /run/sb_pending_reboot ] && echo " (pending reboot)" || echo ""
 }
 
 check_boot_status() {
-  local MSG=""
+  MSG=""
+
   if [[ -d /sys/firmware/efi ]]; then
-    MSG+="UEFI: YES\n"
+    MSG+="UEFI boot: YES\n"
   else
-    MSG+="UEFI: NO\n"
+    MSG+="UEFI boot: NO\n"
   fi
 
-  if mountpoint -q /sys/firmware/efi/efivars; then
-    MSG+="efivars: mounted\n"
+  if mountpoint -q /sys/firmware/efi/efivars 2>/dev/null; then
+    MSG+="efivars mounted: YES\n"
   else
-    MSG+="efivars: NOT mounted\n"
+    MSG+="efivars mounted: NO\n"
   fi
 
+  SBCTL_OK=0
   if command -v sbctl >/dev/null 2>&1; then
-    MSG+="\n--- sbctl status ---\n"
-    MSG+=$(sbctl status 2>&1 || true)
+    SBCTL_OK=1
+    SB_LINE=$(sbctl status 2>/dev/null | grep -i 'Secure Boot' || true)
+    if echo "$SB_LINE" | grep -qi 'enabled'; then
+      MSG+="Secure Boot: YES\n"
+      [ -f /run/sb_pending_reboot ] && rm -f /run/sb_pending_reboot
+    elif echo "$SB_LINE" | grep -qi 'disabled'; then
+      MSG+="Secure Boot: NO\n"
+    else
+      MSG+="Secure Boot: UNKNOWN (sbctl)\n"
+    fi
   else
-    MSG+="sbctl not found\n"
+    MSG+="Secure Boot: sbctl not found\n"
   fi
 
   if [ -f /run/sb_pending_reboot ]; then
-    MSG+="\nA change was made to Secure Boot variables. Reboot to apply.\n"
+    if [ "$SBCTL_OK" -eq 1 ] && sbctl status 2>/dev/null | grep -qi 'enabled'; then
+      MSG+="\nSecure Boot change appears active now.\n"
+      rm -f /run/sb_pending_reboot
+    else
+      MSG+="\nA Secure Boot change was requested earlier. Reboot to apply.\n"
+    fi
   fi
-
-  MSG+="\nIf this Deck has never run SteamOS under Secure Boot before, you will need to sign the SteamOS loader after enabling SB.\n"
 
   dialog --msgbox "$MSG" 22 90
 }
 
-enroll_keys() {
-  OUT="$(/usr/local/sbin/deck-enroll.sh 2>&1 || true)"
-  dialog --msgbox "$OUT" 20 80
-}
-
-unenroll_keys() {
-  OUT="$(/usr/local/sbin/deck-unenroll.sh 2>&1 || true)"
-  dialog --msgbox "$OUT" 20 80
-}
-
-sign_steamos() {
-  OUT="$(/usr/local/sbin/deck-sign-steamos.sh 2>&1 || true)"
-  dialog --msgbox "$OUT" 20 90
-}
-
-sign_other_efi() {
-  OUT="$(/usr/local/sbin/deck-sign-efi.sh 2>&1 || true)"
-  dialog --msgbox "$OUT" 20 90
-}
-
 open_shell() {
   clear
-  echo "======================================================="
-  echo " Steam Deck Secure Boot ISO - Root Shell"
-  echo " ------------------------------------------------------"
-  echo " To go back to the menu, type:  /root/menu.sh"
-  echo " (A USB keyboard is usually required here.)"
-  echo "======================================================="
+  cat <<'EOM'
+=========================================
+ Steam Deck SB ISO - Root Shell
+ To go back to menu: /root/menu.sh
+ (USB keyboard usually required)
+=========================================
+EOM
   exec /bin/bash
 }
 
-main_menu() {
-  while true; do
-    PENDING="$(pending_flag)"
-    CHOICE=$(dialog --clear --stdout \
+while true; do
+  PEND=$(pending_flag)
+  if ! CHOICE=$(dialog --clear --stdout \
       --backtitle "Steam Deck Secure Boot" \
       --title "Main Menu" \
       --menu "Select an action" 0 0 0 \
-      1 "Check Boot Status${PENDING}" \
+      1 "Check Boot Status${PEND}" \
       2 "Enroll / Enable Secure Boot" \
       3 "Sign SteamOS / Deck loader" \
       4 "Sign another EFI (Ubuntu/Mint/etc)" \
@@ -549,58 +503,49 @@ main_menu() {
       6 "--------------------------------" \
       7 "Reboot" \
       8 "Poweroff" \
-      9 "Unenroll / Disable Secure Boot") || exit 0
+      9 "Unenroll / Disable Secure Boot"); then
+    exec /bin/bash
+  fi
 
-    case "$CHOICE" in
-      1) check_boot_status ;;
-      2) enroll_keys ;;
-      3) sign_steamos ;;
-      4) sign_other_efi ;;
-      5) open_shell ;;
-      6) : ;;  # spacer
-      7) reboot ;;
-      8) poweroff ;;
-      9) unenroll_keys ;;
-    esac
-  done
-}
-
-main_menu
+  case "$CHOICE" in
+    1) check_boot_status ;;
+    2) OUT=$(/usr/local/sbin/deck-enroll.sh 2>&1 || true); dialog --msgbox "$OUT" 22 90 ;;
+    3) OUT=$(/usr/local/sbin/deck-sign-steamos.sh 2>&1 || true); dialog --msgbox "$OUT" 20 90 ;;
+    4) OUT=$(/usr/local/sbin/deck-sign-efi.sh 2>&1 || true); dialog --msgbox "$OUT" 20 90 ;;
+    5) open_shell ;;
+    6) : ;;
+    7) reboot ;;
+    8) poweroff ;;
+    9) OUT=$(/usr/local/sbin/deck-unenroll.sh 2>&1 || true); dialog --msgbox "$OUT" 22 90 ;;
+  esac
+done
 EOF
+chmod +x airootfs/root/menu.sh
 
-# ============================================================================
-# 14) systemd hook
-# ============================================================================
-echo "[+] writing airootfs/etc/systemd/system/deck-startup.service"
+# ---------------------------------------------------------------------------
+# 10) systemd bits
+# ---------------------------------------------------------------------------
 mkdir -p airootfs/etc/systemd/system
 cat > airootfs/etc/systemd/system/deck-startup.service <<'EOF'
 [Unit]
-Description=Steam Deck SB background init
+Description=Steam Deck SB init
 After=multi-user.target
-
 [Service]
 Type=oneshot
 ExecStart=/root/runme.sh
 RemainAfterExit=yes
-
 [Install]
 WantedBy=multi-user.target
 EOF
 
-# ============================================================================
-# 15) customize_airootfs.sh
-# ============================================================================
-echo "[+] writing airootfs/root/customize_airootfs.sh"
 cat > airootfs/root/customize_airootfs.sh <<'EOF'
 #!/bin/bash
 set -e
-
 chmod +x /root/runme.sh /root/menu.sh \
   /usr/local/sbin/deck-enroll.sh \
   /usr/local/sbin/deck-unenroll.sh \
   /usr/local/sbin/deck-sign-steamos.sh \
-  /usr/local/sbin/deck-sign-efi.sh \
-  /root/.dialogrc
+  /usr/local/sbin/deck-sign-efi.sh
 
 systemctl enable deck-startup.service
 
@@ -608,7 +553,7 @@ mkdir -p /etc/systemd/system/getty@tty1.service.d
 cat >/etc/systemd/system/getty@tty1.service.d/override.conf <<'EOC'
 [Service]
 ExecStart=
-ExecStart=-/usr/bin/env bash -c 'export DIALOGRC=/root/.dialogrc; exec /root/menu.sh'
+ExecStart=-/usr/bin/env bash -c 'exec /root/menu.sh'
 StandardInput=tty
 StandardOutput=tty
 TTYReset=yes
@@ -631,9 +576,9 @@ done
 EOF
 chmod +x airootfs/root/customize_airootfs.sh
 
-# ============================================================================
-# 16) build ISO
-# ============================================================================
+# ---------------------------------------------------------------------------
+# 11) build
+# ---------------------------------------------------------------------------
 if [ -d /out ]; then
   ISO_OUT_DIR=/out
 else
@@ -645,8 +590,6 @@ echo "[+] building ISO -> $ISO_OUT_DIR"
 mkarchiso -v -r -o "$ISO_OUT_DIR" .
 
 ISO_PATH=$(ls -1t "$ISO_OUT_DIR"/*.iso | head -n1 || true)
-
 echo
 echo "[+] build complete"
 echo "[+] ISO is at: ${ISO_PATH:-$ISO_OUT_DIR/*.iso}"
-echo "[+] keys are hardcoded in this script and in the ISO at /usr/share/deck-sb/keys/"
