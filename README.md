@@ -1,114 +1,184 @@
-# WIP, DONT TRY THIS YET
+# Steam Deck Secure Boot ISO (Archiso)
+**Status:** Beta 1.3
 
-# Alpine Steam Deck Secure Boot ISO
+This project builds an Arch-based live ISO for the Steam Deck (LCD and OLED) that:
 
-This repo describes how to build a small Alpine-based ISO (x86_64) that boots on **BIOS and UEFI** and already contains the tools used in the “Enable Secure Boot for Steam Deck” guide.
+- boots straight to a menu on the Deck
+- lets you **install** Secure Boot keys (our baked keys + Microsoft)
+- lets you **sign** SteamOS or any other EFI loader so it still boots with Secure Boot ON
+- can itself be **re-signed** after the build so you can boot it even when the Deck is already secure-booted
 
-The idea is simple:
+This is heavily inspired by / a practical follow-up to:
+👉 **https://github.com/ryanrudolfoba/SecureBootForSteamDeck**
+His work showed the steps. This repo just automates them into an ISO.
 
-- we don’t change Alpine’s build system
-- we just add the packages we need
-- we let Alpine’s `mkimage.sh` do all the ISO + hybrid boot magic
+---
 
-That makes the ISO reproducible and easy to audit.
+## What you get
 
-## What this ISO is for
+- A live ISO that understands the Deck’s UEFI
+- A ncurses menu with:
+  1. **Check Boot Status** (UEFI? efivars? secureboot?)
+  2. **Enroll / Enable Secure Boot** (runs `sbctl enroll-keys -m` with our baked keys)
+  3. **Sign SteamOS / Deck loader**
+  4. **Sign another EFI (Ubuntu/Mint/etc)**
+  5. **Root shell**
+  7. **Reboot / Poweroff**
+  9. **Unenroll / Disable Secure Boot**
+- Keys baked into the image in **two** places:
+  - `/usr/share/deck-sb/keys/...` (nice and obvious)
+  - `/var/lib/sbctl/...` (what modern `sbctl` expects)
+- A fixed sbctl GUID so the layout is stable:
+  - `decdecde-dec0-4dec-adec-decdecdecdec`
+- Optional post-build **resigner** to re-sign the ISO’s embedded EFI image, so the ISO boots even after you enable Secure Boot with these keys
 
-The original Steam Deck secure boot guide expects you to:
+---
 
-1. install a Linux distro on the Deck (Fedora, Ubuntu, etc.)
-2. install/build `sbctl`
-3. enroll PK/KEK/db
-4. optionally revert using `efitools`
-5. inspect with `mokutil`
+## Why you sometimes need to sign SteamOS (or other OSes)
 
-We just put those tools **in the live environment** so you can do the key work right away.
+Secure Boot is simple but strict: **the firmware will only run binaries signed by keys it trusts.**
 
-## Custom profile
+What this ISO does when you pick “Enroll / Enable Secure Boot”:
 
-Save this as `mkimg.steamdeck-sb.sh`:
+1. installs **our** key set (the ones below)
+2. installs **Microsoft** production UEFI keys (so Windows and lots of vendor stuff still works)
+3. tells firmware “we’re done, leave setup mode”
 
-```sh
-profile_steamdeck_sb() {
-    profile_standard
-    apks="$apks sbctl efitools mokutil e2fsprogs-extra git"
-}
-profile_steamdeck_sb
+After that:
+- anything signed by Microsoft → OK
+- anything signed by **our** keys → OK
+- anything not signed → **blocked**
+
+SteamOS and other Linux installs often ship **unsigned** or **signed with somebody else’s key**, so the firmware doesn’t know to trust it. That’s why we have two menu entries for signing:
+
+- “Sign SteamOS / Deck loader”
+- “Sign another EFI”
+
+Those just take the existing EFI binary and **add our signature** to it so it passes Secure Boot with our key.
+
+**Important:** if later you **disable** Secure Boot or clear vars, you do **not** have to “unsign” SteamOS or anything else. Signatures are just extra data. If Secure Boot is off, the firmware ignores them.
+
+---
+
+## Keys we use (baked, public on purpose)
+
+We all use the same keys so nobody bricks themselves permanently. These are the same ones we embed into the ISO:
+
+<details>
+<summary>Show baked keys</summary>
+
+**PK.key**
+```text
+-----BEGIN PRIVATE KEY-----
+MIIEvwIBADANBgkqhkiG9w0BAQEFAASCBKkwggSlAgEAAoIBAQDAiQ+44gfMGScB
+XrKOF8smb+IbcvMzZaZJNYfngTr12ZfLcuGBXKA7JF5sssFMaRA7oQ/lYW4hT99q
+acyRpSN3VFWbzZlrU3hq/SH+X1EEkoLfjmRaTjT5Zecuf7RGmf+VqCYvv6L73l/c
+VwXnuX70kNkE82XmHGnX9wsmrMKH762lmS80NQS91Sl1jGKt3ylUZHHD7A68pSSR
+JcLu2rFtqgaE9xt+V996QZvExD/nJQ/LvoVapB2z29dmdX4JidaK3hmUFseH2wYk
+pbEuQB9JxhZZGHxwOiz50uctFiyUGXFJBkkS2yykuVtvDYYSzvPdpfFzqLw9+DGX
+bWzrRwqJAgMBAAECggEADCB6e79dcFyIEEPh9u6iJ3pWAV+82E95u11LpfFhZS3w
+9PMcueRyXOdFGGq/DToGAUt7UB5SLMBkJsa0CEj8DZnsrC5HtRdLQDwrY9DvriVU
+1lsGWa3GgdUu3llT8/J1MNgVwMtPGNuSqdd7Eipb2kvrk/eJQxkBn/LVWR1DHSfQ
+12xdq5jO/wxkeifPwwNSZ8QRIhorOV4jUZkBPJSYaaZDSNu3cDyeo7fVVXc5QVgm
+ep5Iu8ntLiFcQkKkqsUuPGTre+Z1bjBhjFAqAK0+zJJ7xDF5Pfflwuj7W+AL0FZY
+GxGTrZkIX/4Rg0Fe3H4pCAMZ311PlcemvMuH10BatQKBgQDfL/qqGLWh/gEW2Vb2
+POMFe+YSttKuWNp8Kwj9h+ZFcSp+IW0T8vzklciUwJ8dqZNhqQ7KdNqpaJYZviHD
+73oZoMuOqj1N0TGbsh/C2G76kgYlGhm8f1dBjZatHiMGrREpBO9m9+0A7o6TBP3T
+RzMxmnMVLpML15KyYpBSrBPV5wKBgQDc13GRrnw0Kkwmi79LQUwJgB2jjW4re2gh
+lsIqK88ok18ubdxRPe+gVak9DOq/hr4RuT6bE/nJIXKnJqLyGswjaV4GkfKN6u2C
+gKnPjsl1jATHV5nq4gdpX/Z8C5EeEIDlmMxxOyl6ocVw95D2aXNsePf38fX5ftWg
+z2LcmyIuDwKBgQC3sLJ7GrkrKXZWCu1C3tvuYIn8rxH5QtIXzgepOxev4bMaeoJf
+H+c6b3jVzS9oZ3AQueadhM2PDrAzYcRCkjAJNckzkzO/f0R4I4N2h1HX0yVRlgjG
+lnwHTPRNaXdkgD6WZyRut/ENiko4AKy0Hm6pDbhYH6wQ3A012l90W4I70wKBgQCC
+mbJjCgIPw3fXT8uoEIyMDcT5ZPljI474VjSrRc8z2rtuNLAXJ36fnikAnrPw4hlj
+V96rTUvp4yrvqMyySqCwzG47inIb9XPSOo6x3WpMZqqozKiMnHDvoz2cLCb81Zu0
+rAEzcV5dVG/0F6QV5VTKMFvMuL3Td2uUtzBq8B9thwKBgQCwA6kAcdmfvtT87WM7
+0xHkDUlPfJMt1ZiL9QdDPIR/AvDuQtiNBHUoaqDDJcwYwFe42URkBbitksXPTAtG
+I6fHURi0C4xrR5XAFHdFz5pm3w3+1gTf8rj/NdPNOjlx+oheZaGGL6Gni8oF8S0L
+gAleN/5iX9x9Htpi80o4N/kY3w==
+-----END PRIVATE KEY-----
 ```
 
-### Why these packages?
+**PK.pem**
+```text
+-----BEGIN CERTIFICATE-----
+MIIDETCCAfmgAwIBAgIUQBx1w+uTUKr7H2jtDG2rHfL4ZuowDQYJKoZIhvcNAQEL
+BQAwGDEWMBQGA1UEAwwNU3RlYW0gRGVjayBQSzAeFw0yNTExMDcwMDE4MTJaFw0z
+NTExMDUwMDE4MTJaMBgxFjAUBgNVBAMMDVN0ZWFtIERlY2sgUEswggEiMA0GCSqG
+SIb3DQEBAQUAA4IBDwAwggEKAoIBAQDAiQ+44gfMGScBXrKOF8smb+IbcvMzZaZJ
+NYfngTr12ZfLcuGBXKA7JF5sssFMaRA7oQ/lYW4hT99qacyRpSN3VFWbzZlrU3hq
+/SH+X1EEkoLfjmRaTjT5Zecuf7RGmf+VqCYvv6L73l/cVwXnuX70kNkE82XmHGnX
+9wsmrMKH762lmS80NQS91Sl1jGKt3ylUZHHD7A68pSSRJcLu2rFtqgaE9xt+V996
+QZvExD/nJQ/LvoVapB2z29dmdX4JidaK3hmUFseH2wYkpbEuQB9JxhZZGHxwOiz5
+0uctFiyUGXFJBkkS2yykuVtvDYYSzvPdpfFzqLw9+DGXbWzrRwqJAgMBAAGjUzBR
+MB0GA1UdDgQWBBSb3Ivqxe6awsRvL4HUvn7I45RgrTAfBgNVHSMEGDAWgBSb3Ivq
+xe6awsRvL4HUvn7I45RgrTAPBgNVHRMBAf8EBTADAQH/MA0GCSqGSIb3DQEBCwUA
+A4IBAQARr6ABa4JHjW8/jbTjo7RZpobkaR523BhXvPc3U4j19jKvOLygRT68QYF3
+XWAMVeMcFROs06tcSubxqdAKa4INMyVVklGslIT/z3CkLR5q9QV5SgI4Z3sRzAmL
+PUKOoWc4x6op2heyxujlLwwiZouXWHqaklSaUymae9mCPUtwPg135WNc+E2BC4Ep
+eU5IzhUe8nLj4wlWQoxdBsKWhuvsVJVEWs/HkzPrwulIAHQSb/divYe3eTrYKfib
+gXnR8BtFo0R8QGTtodx6d7nu1QO3275yvHAZTr3bfygs5AkSHF9oqpaUPAOyPM4c
+OyHXIWSLcl2GuAJnBoSR3rKgFvvr
+-----END CERTIFICATE-----
+```
 
-- **sbctl** – main tool in the guide for generating and enrolling Secure Boot keys and signing EFI binaries.
-- **efitools** – provides `efi-updatevar` to clear PK/KEK/db when reverting.
-- **mokutil** – to query PK, KEK, and DB to confirm enrollment.
-- **e2fsprogs-extra** – for `chattr`, used to remove the immutable bit on efivars.
-- **git** – convenient if you want to pull the original guide while in the live ISO.
+We mirror these inside the ISO to KEK/db so we can also *clear* secure boot later.
+</details>
 
-Everything else (kernel, initramfs, bootloader setup, hybrid ISO) is inherited from Alpine’s `profile_standard`.
+---
 
-## Reproducible build steps
+## The resigner (important)
 
-Run on your host:
+**Problem:** after enrolling these keys on the Deck, the freshly built ISO might not boot anymore — because the EFI image inside the ISO isn’t signed with *these* keys.
+
+**Solution:** `resigner.sh` patches the hidden EFI image inside the ISO:
+
+1. find the El Torito UEFI image
+2. extract it
+3. sign `EFI/BOOT/BOOTx64.EFI` (and IA32 if present) with the baked keys
+4. write it back
+5. produce `*-signed.iso`
+
+Usage:
 
 ```bash
-docker run --rm -it --platform=linux/amd64 -w /work alpine:edge sh
+./resigner.sh archlinux-steamdeck-sb-latest-x86_64.iso
+# -> archlinux-steamdeck-sb-latest-x86_64-signed.iso
 ```
 
-Inside the container:
+The main builder will auto-run this if `resigner.sh` sits next to it. If not, it prints:
 
-```sh
-apk update
-apk add git abuild alpine-conf syslinux xorriso squashfs-tools grub-efi mtools dosfstools mkinitfs ca-certificates
-
-abuild-keygen -a
-cp /root/.abuild/*.pub /etc/apk/keys/
-
-cd /work
-git clone --depth=1 https://git.alpinelinux.org/aports
-
-adduser -D builder
-addgroup builder abuild
-chown -R builder:builder /work
+```text
+[!] ISO WILL NOT BOOT under your Secure Boot keys unless you run the resigner manually.
 ```
 
-Now as `builder`:
+You can also point the resigner at other similar ISOs to make them bootable under these keys.
 
-```sh
-su - builder
-cd /work/aports/scripts
-cat > mkimg.steamdeck-sb.sh <<'EOF'
-profile_steamdeck_sb() {
-    profile_standard
-    apks="$apks sbctl efitools mokutil e2fsprogs-extra git"
-}
-profile_steamdeck_sb
-EOF
-exit
-```
+---
 
-Give the builder user the signing key (back as root):
+## Building it yourself
 
-```sh
-mkdir -p /home/builder/.abuild
-cp /root/.abuild/*.rsa /home/builder/.abuild/
-cp /root/.abuild/*.pub /home/builder/.abuild/
-chown -R builder:builder /home/builder/.abuild
-```
+1. Arch / Arch container
+2. install `archiso`, `grub`, `sbctl`
+3. run the builder script from this repo
 
-Build the ISO (as builder again):
+Output lands in `out//`. If the resigner was present, you’ll also get a `*-signed.iso`.
 
-```sh
-su - builder
-cd /work/aports/scripts
-export PACKAGER_PRIVKEY=/home/builder/.abuild/<your-key>.rsa
-export PACKAGER="builder <builder@localhost>"
-./mkimage.sh   --tag edge   --arch x86_64   --repository https://dl-cdn.alpinelinux.org/alpine/edge/main   --repository https://dl-cdn.alpinelinux.org/alpine/edge/community   --profile steamdeck_sb   --outdir /work/out
-```
+---
 
-The ISO will be in `/work/out/`.
+## Booting it on the Deck
 
-## Notes
+1. Power off Deck
+2. Hold **Volume -** and press **Power**
+3. Pick the USB you flashed the ISO to
+4. Menu shows up and lets you enroll, sign, or disable Secure Boot
 
-- We used **Alpine edge** so we get a newer `sbctl` that matches the 2025 note about keys being in `/var/lib/sbctl/keys/...`.
-- Because this is a thin wrapper around `profile_standard`, anyone can audit it easily: it’s just an Alpine ISO with a few extra packages installed at build time.
-- To distribute: publish this README, the `mkimg.steamdeck-sb.sh`, and optionally a small `build.sh` that runs these commands in a container.
+You can also copy the ISO contents to a bootable partition and boot it locally if you don’t want to keep a USB around.
+
+---
+
+## Credits
+
+- Original method / research: **@ryanrudolfoba**  
+  https://github.com/ryanrudolfoba/SecureBootForSteamDeck
+- This project: turn the guide into an Archiso live image, bake keys, add fixed GUID, add post-build resigner.
