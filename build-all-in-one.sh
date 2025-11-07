@@ -1,20 +1,28 @@
 #!/usr/bin/env bash
 set -euo pipefail
+# Steam Deck Secure Boot ISO builder
+# Version: Beta 1.3
+
+# one source of truth for the GUID we bake into sbctl
+DECK_SB_GUID="decdecde-dec0-4dec-adec-decdecdecdec"
+
+# one source of truth for the resign warning
+RESIGN_WARN='[!] ISO WILL NOT BOOT under your Secure Boot keys unless you run the resigner manually.'
 
 # ---------------------------------------------------------------------------
 # Steam Deck Secure Boot ISO builder (plain ncurses)
 #
 # - Based on Archiso baseline
 # - UEFI + systemd-boot only
-# - Adds sbctl + efitools + mokutil + our baked keys
-# - Puts sbctl data in the NEW layout inside the ISO:
-#       /var/lib/sbctl/GUID
-#       /var/lib/sbctl/keys/{PK,KEK,db}/...
-#   so archiso’s own sbctl hook can sign without saying “old configuration”
-# - Also keeps a copy of the keys at /usr/share/deck-sb/keys for our own scripts
-# - Boots straight into /root/menu.sh (plain dialog defaults)
-# - Fixed sbctl GUID: decdecde-dec0-4dec-adec-decdecdecdec
+# - Adds sbctl + efitools + mokutil + baked keys
+# - Keeps keys in TWO places:
+#     * /usr/share/deck-sb/keys  (pretty, human-visible)
+#     * /var/lib/sbctl/keys/...  (sbctl’s new layout)
+# - Boots straight into /root/menu.sh
+# - After build: if ./resigner.sh exists next to this script, auto-resign ISO
 # ---------------------------------------------------------------------------
+
+SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 
 WORKDIR=${WORKDIR:-/root/archlive}
 PROFILENAME=${PROFILENAME:-steamdeck-sb}
@@ -43,7 +51,7 @@ ISO_UNWANTED_PKGS=(
   zsh grml-zsh-config livecd-sounds terminus-font
 )
 
-echo "[+] Steam Deck SB ISO build"
+echo "[+] Steam Deck SB ISO build (Beta 1.3)"
 echo "[+] workdir: $WORKDIR"
 
 # ---------------------------------------------------------------------------
@@ -94,7 +102,6 @@ airootfs_image_tool_options=(
 )
 
 file_permissions=(
-  ["/root/runme.sh"]="0:0:755"
   ["/root/menu.sh"]="0:0:755"
   ["/usr/local/sbin/deck-enroll.sh"]="0:0:755"
   ["/usr/local/sbin/deck-unenroll.sh"]="0:0:755"
@@ -130,6 +137,7 @@ mv "$tmpfile" packages.x86_64
 
 # ---------------------------------------------------------------------------
 # 5) UEFI/systemd-boot
+#    rotate console to landscape (fbcon=rotate:3)
 # ---------------------------------------------------------------------------
 mkdir -p efiboot/loader/entries
 cat > efiboot/loader/entries/archiso-x86_64.conf <<'EOF'
@@ -138,7 +146,7 @@ linux   /%INSTALL_DIR%/boot/x86_64/vmlinuz-linux
 initrd  /%INSTALL_DIR%/boot/intel-ucode.img
 initrd  /%INSTALL_DIR%/boot/amd-ucode.img
 initrd  /%INSTALL_DIR%/boot/x86_64/initramfs-linux.img
-options archisobasedir=%INSTALL_DIR% archiso_locale=en_US.UTF-8 archiso_keyboard=us fbcon=rotate:1
+options archisobasedir=%INSTALL_DIR% archiso_locale=en_US.UTF-8 archiso_keyboard=us fbcon=rotate:3
 EOF
 
 mkdir -p efiboot/EFI/systemd efiboot/EFI/BOOT
@@ -150,21 +158,7 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 6) airootfs startup
-# ---------------------------------------------------------------------------
-mkdir -p airootfs/root
-cat > airootfs/root/runme.sh <<'EOF'
-#!/bin/bash
-set -e
-echo "deck-sb" > /etc/hostname
-echo "ran on $(date)" > /root/ran.log
-exit 0
-EOF
-
-# ---------------------------------------------------------------------------
-# 7) baked keys
-#    - keep copy in /usr/share/deck-sb/keys
-#    - ALSO pre-create /var/lib/sbctl/* (new layout) so archiso’s sbctl hook is happy
+# 6) baked keys (two places) + new sbctl layout
 # ---------------------------------------------------------------------------
 mkdir -p airootfs/usr/share/deck-sb/keys
 mkdir -p airootfs/var/lib/sbctl/keys/PK
@@ -224,52 +218,53 @@ OyHXIWSLcl2GuAJnBoSR3rKgFvvr
 -----END CERTIFICATE-----
 EOF
 
-# mirror to KEK/db for our copy
+# mirror to KEK/db for our copy (pretty place)
 cp airootfs/usr/share/deck-sb/keys/PK.key  airootfs/usr/share/deck-sb/keys/KEK.key
 cp airootfs/usr/share/deck-sb/keys/PK.pem  airootfs/usr/share/deck-sb/keys/KEK.pem
 cp airootfs/usr/share/deck-sb/keys/PK.key  airootfs/usr/share/deck-sb/keys/db.key
 cp airootfs/usr/share/deck-sb/keys/PK.pem  airootfs/usr/share/deck-sb/keys/db.pem
 
-# and copy to NEW sbctl layout so the chroot hook can use them
-cp airootfs/usr/share/deck-sb/keys/PK.key  airootfs/var/lib/sbctl/keys/PK/PK.key
-cp airootfs/usr/share/deck-sb/keys/PK.pem  airootfs/var/lib/sbctl/keys/PK/PK.pem
-cp airootfs/usr/share/deck-sb/keys/KEK.key airootfs/var/lib/sbctl/keys/KEK/KEK.key
-cp airootfs/usr/share/deck-sb/keys/KEK.pem airootfs/var/lib/sbctl/keys/KEK/KEK.pem
-cp airootfs/usr/share/deck-sb/keys/db.key  airootfs/var/lib/sbctl/keys/db/db.key
-cp airootfs/usr/share/deck-sb/keys/db.pem  airootfs/var/lib/sbctl/keys/db/db.pem
+# copy to sbctl new layout
+cp airootfs/usr/share/deck-sb/keys/PK.key   airootfs/var/lib/sbctl/keys/PK/PK.key
+cp airootfs/usr/share/deck-sb/keys/PK.pem   airootfs/var/lib/sbctl/keys/PK/PK.pem
+cp airootfs/usr/share/deck-sb/keys/KEK.key  airootfs/var/lib/sbctl/keys/KEK/KEK.key
+cp airootfs/usr/share/deck-sb/keys/KEK.pem  airootfs/var/lib/sbctl/keys/KEK/KEK.pem
+cp airootfs/usr/share/deck-sb/keys/db.key   airootfs/var/lib/sbctl/keys/db/db.key
+cp airootfs/usr/share/deck-sb/keys/db.pem   airootfs/var/lib/sbctl/keys/db/db.pem
 
 # fixed Deck GUID (new sbctl layout)
-echo -n "decdecde-dec0-4dec-adec-decdecdecdec" > airootfs/var/lib/sbctl/GUID
+echo -n "$DECK_SB_GUID" > airootfs/var/lib/sbctl/GUID
 
 # ---------------------------------------------------------------------------
-# 8) helper scripts (enroll/unenroll/sign)
+# 7) helper scripts (enroll/unenroll/sign)
 # ---------------------------------------------------------------------------
 mkdir -p airootfs/usr/local/sbin
 
-# enroll
-cat > airootfs/usr/local/sbin/deck-enroll.sh <<'EOF'
+# enroll – back to reading from /usr/share/deck-sb/keys
+cat > airootfs/usr/local/sbin/deck-enroll.sh <<EOF
 #!/bin/bash
 set -e
 
 KEYDIR="/usr/share/deck-sb/keys"
-FIXED_GUID="decdecde-dec0-4dec-adec-decdecdecdec"
+FIXED_GUID="$DECK_SB_GUID"
 
 for f in PK.key PK.pem KEK.key KEK.pem db.key db.pem; do
-  [ -f "$KEYDIR/$f" ] || { echo "missing $KEYDIR/$f"; exit 1; }
+  [ -f "\$KEYDIR/\$f" ] || { echo "missing \$KEYDIR/\$f"; exit 1; }
 done
 
 [ -d /sys/firmware/efi/efivars ] || { echo "UEFI/efivars not present"; exit 1; }
 
 mkdir -p /var/lib/sbctl
-echo -n "$FIXED_GUID" > /var/lib/sbctl/GUID
+echo -n "\$FIXED_GUID" > /var/lib/sbctl/GUID
 
+# ensure runtime /var has the same layout
 mkdir -p /var/lib/sbctl/keys/PK /var/lib/sbctl/keys/KEK /var/lib/sbctl/keys/db
-cp "$KEYDIR/PK.key"  /var/lib/sbctl/keys/PK/PK.key
-cp "$KEYDIR/PK.pem"  /var/lib/sbctl/keys/PK/PK.pem
-cp "$KEYDIR/KEK.key" /var/lib/sbctl/keys/KEK/KEK.key
-cp "$KEYDIR/KEK.pem" /var/lib/sbctl/keys/KEK/KEK.pem
-cp "$KEYDIR/db.key"  /var/lib/sbctl/keys/db/db.key
-cp "$KEYDIR/db.pem"  /var/lib/sbctl/keys/db/db.pem
+cp "\$KEYDIR/PK.key"  /var/lib/sbctl/keys/PK/PK.key
+cp "\$KEYDIR/PK.pem"  /var/lib/sbctl/keys/PK/PK.pem
+cp "\$KEYDIR/KEK.key" /var/lib/sbctl/keys/KEK/KEK.key
+cp "\$KEYDIR/KEK.pem" /var/lib/sbctl/keys/KEK/KEK.pem
+cp "\$KEYDIR/db.key"  /var/lib/sbctl/keys/db/db.key
+cp "\$KEYDIR/db.pem"  /var/lib/sbctl/keys/db/db.pem
 
 chattr -i /sys/firmware/efi/efivars/{PK,KEK,db}* 2>/dev/null || true
 
@@ -410,7 +405,7 @@ EOF
 chmod +x airootfs/usr/local/sbin/deck-sign-efi.sh
 
 # ---------------------------------------------------------------------------
-# 9) menu.sh – now plain dialog, no .dialogrc, no color overrides
+# 8) menu.sh – plain dialog, hostname set on shell open
 # ---------------------------------------------------------------------------
 cat > airootfs/root/menu.sh <<'EOF'
 #!/bin/bash
@@ -463,6 +458,7 @@ check_boot_status() {
 }
 
 open_shell() {
+  echo "deck-sb" > /etc/hostname 2>/dev/null || true
   clear
   cat <<'EOM'
 =========================================
@@ -508,31 +504,18 @@ EOF
 chmod +x airootfs/root/menu.sh
 
 # ---------------------------------------------------------------------------
-# 10) systemd bits
+# 9) systemd bits – no runme, just getty override to launch menu
 # ---------------------------------------------------------------------------
+mkdir -p airootfs/root
 mkdir -p airootfs/etc/systemd/system
-cat > airootfs/etc/systemd/system/deck-startup.service <<'EOF'
-[Unit]
-Description=Steam Deck SB init
-After=multi-user.target
-[Service]
-Type=oneshot
-ExecStart=/root/runme.sh
-RemainAfterExit=yes
-[Install]
-WantedBy=multi-user.target
-EOF
-
 cat > airootfs/root/customize_airootfs.sh <<'EOF'
 #!/bin/bash
 set -e
-chmod +x /root/runme.sh /root/menu.sh \
+chmod +x /root/menu.sh \
   /usr/local/sbin/deck-enroll.sh \
   /usr/local/sbin/deck-unenroll.sh \
   /usr/local/sbin/deck-sign-steamos.sh \
   /usr/local/sbin/deck-sign-efi.sh
-
-systemctl enable deck-startup.service
 
 mkdir -p /etc/systemd/system/getty@tty1.service.d
 cat >/etc/systemd/system/getty@tty1.service.d/override.conf <<'EOC'
@@ -562,7 +545,7 @@ EOF
 chmod +x airootfs/root/customize_airootfs.sh
 
 # ---------------------------------------------------------------------------
-# 11) build ISO
+# 10) build ISO
 # ---------------------------------------------------------------------------
 if [ -d /out ]; then
   ISO_OUT_DIR=/out
@@ -575,6 +558,29 @@ echo "[+] building ISO -> $ISO_OUT_DIR"
 mkarchiso -v -r -o "$ISO_OUT_DIR" .
 
 ISO_PATH=$(ls -1t "$ISO_OUT_DIR"/*.iso | head -n1 || true)
+
 echo
 echo "[+] build complete"
 echo "[+] ISO is at: ${ISO_PATH:-$ISO_OUT_DIR/*.iso}"
+
+# ---------------------------------------------------------------------------
+# 11) post-build: auto-resign using external resign script (if present)
+# ---------------------------------------------------------------------------
+RESIGNER="$SCRIPT_DIR/resigner.sh"
+SIGNED_PATH=
+if [ -n "${ISO_PATH:-}" ]; then
+  SIGNED_PATH="${ISO_PATH%.iso}-signed.iso"
+fi
+
+if [ -n "${ISO_PATH:-}" ] && [ -f "$RESIGNER" ]; then
+  echo "[+] found resigner script at $RESIGNER"
+  echo "[+] resigning ISO to make it Deck-SB-bootable..."
+  "$RESIGNER" "$ISO_PATH"
+  if [ -f "$SIGNED_PATH" ]; then
+    echo "[+] done. signed ISO: $SIGNED_PATH"
+  else
+    echo "$RESIGN_WARN"
+  fi
+else
+  echo "$RESIGN_WARN"
+fi
