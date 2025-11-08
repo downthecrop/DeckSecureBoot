@@ -1,0 +1,92 @@
+# ~/.dialogrc – modern dark / SteamOS-inspired
+# based strictly on your dialog --create-rc output
+
+aspect = 0
+separate_widget = ""
+tab_len = 0
+visit_items = OFF
+use_scrollbar = OFF
+
+# enable colors and shadow
+use_shadow = ON
+use_colors = ON
+
+# full-screen background: dark backdrop with cyan text so backtitle stays visible
+screen_color = (CYAN,BLACK,OFF)
+
+# drop shadow
+shadow_color = (BLACK,BLACK,ON)
+
+# main dialog: dark with light text
+dialog_color = (WHITE,BLACK,OFF)
+
+# top bar/title: cyan on black = “accent”
+title_color  = (CYAN,BLACK,ON)
+
+# border: blue on black, so it pops a bit from dialog
+border_color = (BLUE,BLACK,ON)
+
+# buttons
+# active: black text on cyan = clear focus
+button_active_color        = (BLACK,CYAN,ON)
+# inactive: same as dialog, so it looks flat
+button_inactive_color      = dialog_color
+# active button key (the hot letter) matches active button
+button_key_active_color    = button_active_color
+# inactive button key: subtle but visible
+button_key_inactive_color  = (CYAN,BLACK,OFF)
+# active button label: same as active button so it’s coherent
+button_label_active_color  = (BLACK,CYAN,ON)
+# inactive label: light on dark
+button_label_inactive_color= (WHITE,BLACK,OFF)
+
+# input boxes: same dark chrome, blue border
+inputbox_color        = dialog_color
+inputbox_border_color = border_color
+
+# search boxes: same look
+searchbox_color        = dialog_color
+searchbox_title_color  = title_color
+searchbox_border_color = border_color
+
+# little position indicator (e.g. in textboxes): use the accent
+position_indicator_color = title_color
+
+# menu boxes: same dark panel, blue border
+menubox_color        = dialog_color
+menubox_border_color = border_color
+
+# list items: dark; selected = the cyan highlight we use for buttons
+item_color          = dialog_color
+item_selected_color = button_active_color
+
+# tags (left column in checklist/radiolist)
+tag_color              = title_color
+tag_selected_color     = button_label_active_color
+tag_key_color          = button_key_inactive_color
+tag_key_selected_color = (CYAN,BLACK,ON)
+
+# checkboxes
+check_color          = dialog_color
+check_selected_color = button_active_color
+
+# scroll arrows: accent
+uarrow_color = (CYAN,BLACK,ON)
+darrow_color = uarrow_color
+
+# help text at bottom: keep readable
+itemhelp_color = (WHITE,BLACK,OFF)
+
+# forms
+form_active_text_color   = button_active_color
+form_text_color          = (WHITE,BLACK,OFF)
+form_item_readonly_color = (CYAN,BLACK,OFF)
+
+# gauge/progress
+gauge_color = title_color
+
+# secondary borders: keep them dark so UI looks flatter
+border2_color           = dialog_color
+inputbox_border2_color  = dialog_color
+searchbox_border2_color = dialog_color
+menubox_border2_color   = dialog_color

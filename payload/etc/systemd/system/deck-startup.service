@@ -1,0 +1,10 @@
+[Unit]
+Description=Steam Deck SB init
+DefaultDependencies=no
+After=local-fs.target
+Before=getty@tty1.service multi-user.target
+[Service]
+Type=simple
+ExecStart=/root/menu.sh
+[Install]
+WantedBy=multi-user.target
