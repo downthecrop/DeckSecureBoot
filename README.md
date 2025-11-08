@@ -1,5 +1,5 @@
 # Steam Deck Secure Boot ISO (Archiso)
-**Status:** Beta 1.3
+**Status:** Beta 1.6
 
 This project builds an Arch-based live ISO for the Steam Deck (LCD and OLED) that:
 
@@ -11,6 +11,20 @@ This project builds an Arch-based live ISO for the Steam Deck (LCD and OLED) tha
 This is heavily inspired by / a practical follow-up to:
 👉 **https://github.com/ryanrudolfoba/SecureBootForSteamDeck**
 His work showed the steps. This repo just automates them into an ISO.
+
+---
+
+## Repo layout
+
+The project is no longer “just two scripts”. Instead we keep the moving pieces in their own directories so the build remains reproducible and reviewable:
+
+- `build.sh` – single entry point that prepares an Archiso workdir, copies our profile, injects payload + keys, and (optionally) calls the resigner when it sits next to the builder.
+- `profile/` – trimmed Archiso baseline overrides (mainly `profiledef.sh`, EFI bits, pacman.conf). This folder mirrors what ends up under `/usr/share/archiso/configs/...`.
+- `payload/` – everything that lands inside the live image. `payload/root/menu.sh` drives the ncurses UI, the `deck-*.sh` helpers enroll/unenroll/sign, and `payload/etc/systemd/system/deck-startup.service` makes the menu boot instantly.
+- `keys/` – the baked Secure Boot keys (`PK.pem`/`PK.key`). `build.sh` mirrors them to `/usr/share/deck-sb/keys` and `/var/lib/sbctl/` during the image build.
+- `resigner.sh` – optional post-build helper that re-signs the hidden ISO EFI image so the ISO still boots after the Deck trusts these keys.
+
+Keeping these pieces separate makes it easier to audit changes, swap payload bits, or point the builder at a different Archiso profile via environment variables.
 
 ---
 
@@ -158,11 +172,11 @@ You can also point the resigner at other similar ISOs to make them bootable unde
 
 ## Building it yourself
 
-1. Arch / Arch container
-2. install `archiso`, `grub`, `sbctl`
-3. run the builder script from this repo
+1. Use an Arch install or Arch container (the builder shells out to `pacman`, `mkarchiso`, etc.).
+2. Install `archiso`, `grub`, `sbctl`, `sbsigntools` (the script will auto-install them if you run it as root on Arch).
+3. Run `sudo ./build.sh`. You can override paths with env vars such as `WORKDIR`, `PROFILE_DIR`, `PAYLOAD_DIR`, or `KEYS_DIR` if you keep your assets elsewhere.
 
-Output lands in `out//`. If the resigner was present, you’ll also get a `*-signed.iso`.
+The builder drops ISOs in `/out` when that directory exists (handy inside containers) or `./out/` otherwise. When `resigner.sh` is detected next to `build.sh`, the newly built ISO gets re-signed automatically and you’ll see both `*.iso` and `*-signed.iso` outputs.
 
 ---
 

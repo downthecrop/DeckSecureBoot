@@ -85,7 +85,7 @@ done
 
 progress_msg() {
   local msg="$1"
-  dialog --backtitle "$BACKTITLE" --infobox "$msg" 5 70
+  dialog --infobox "$msg" 5 70
 }
 
 progress_msg "Scanning disks for EFI files and kernels..."
@@ -222,7 +222,7 @@ show_dialog_msg() {
 
   local msg
   printf -v msg '%s\n\n%s' "$heading" "$body"
-  dialog --backtitle "$BACKTITLE" --msgbox "$msg" "$height" "$width"
+  dialog --msgbox "$msg" "$height" "$width"
 }
 
 guess_kind() {
@@ -269,7 +269,7 @@ if [ "${#ALL[@]}" -eq 0 ]; then
     checked_dirs="(no candidate directories)"
   fi
 
-  dialog --backtitle "$BACKTITLE" --msgbox "No EFI files were found.\nChecked: ${checked_dirs}.\nMount your target ESP and try again." 11 74
+  dialog --msgbox "No EFI files were found.\nChecked: ${checked_dirs}.\nMount your target ESP and try again." 11 74
   exit 1
 fi
 
@@ -297,20 +297,20 @@ while true; do
     i=$((i+1))
   done
 
-  CHOICE=$(dialog --clear --stdout --backtitle "$BACKTITLE" --cancel-label "Back" --menu "Select EFI / kernel to sign" 0 0 0 "${MENU[@]}") || break
+  CHOICE=$(dialog --clear --stdout --cancel-label "Back" --menu "Select EFI / kernel to sign" 0 0 0 "${MENU[@]}") || break
   TARGET="${ORDERED[$((CHOICE-1))]}"
 
   if ! ERR=$(ensure_rw "$TARGET"); then
-    dialog --backtitle "$BACKTITLE" --msgbox "${ERR:-Unable to access target.}" 8 70
+    dialog --msgbox "${ERR:-Unable to access target.}" 8 70
     continue
   fi
 
   lower_target=${TARGET,,}
   if [[ "$lower_target" == *microsoft* || "$lower_target" == *bootmgfw.efi* ]]; then
-    dialog --backtitle "$BACKTITLE" --yesno "This looks like a Windows EFI loader.\nResigning this EFI is not recommended.\nContinue anyway?" 12 60 || continue
+    dialog --yesno "This looks like a Windows EFI loader.\nResigning this EFI is not recommended.\nContinue anyway?" 12 60 || continue
   fi
 
-  dialog --backtitle "$BACKTITLE" --infobox "Signing:\n$TARGET" 6 70
+  dialog --infobox "Signing:\n$TARGET" 6 70
   RAW_OUTPUT=$(sbctl sign -s "$TARGET" 2>&1)
   STATUS=$?
   OUTPUT=$(printf '%s' "$RAW_OUTPUT" | sanitize_dialog_text)

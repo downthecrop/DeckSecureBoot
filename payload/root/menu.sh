@@ -51,7 +51,7 @@ check_boot_status() {
     fi
   fi
 
-  dialog --backtitle "$BACKTITLE" --msgbox "$MSG" 22 90
+  dialog --msgbox "$MSG" 22 90
 }
 
 open_shell() {
@@ -85,12 +85,12 @@ while true; do
 
   case "$CHOICE" in
     1) check_boot_status ;;
-    2) OUT=$(/root/deck-enroll.sh 2>&1 || true); dialog --backtitle "$BACKTITLE" --msgbox "$OUT" 22 90 ;;
+    2) OUT=$(/root/deck-enroll.sh 2>&1 || true); dialog --msgbox "$OUT" 22 90 ;;
     3) /root/deck-sign-efi.sh ;;
     4) open_shell ;;
     5) : ;;
     6) reboot ;;
     7) poweroff ;;
-    8) OUT=$(/root/deck-unenroll.sh 2>&1 || true); dialog --backtitle "$BACKTITLE" --msgbox "$OUT" 22 90 ;;
+    8) OUT=$(/root/deck-unenroll.sh 2>&1 || true); dialog --msgbox "$OUT" 22 90 ;;
   esac
 done
