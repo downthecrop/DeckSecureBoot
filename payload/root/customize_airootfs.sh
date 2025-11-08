@@ -3,7 +3,8 @@ set -e
 chmod +x /root/menu.sh \
   /root/deck-enroll.sh \
   /root/deck-unenroll.sh \
-  /root/deck-sign-efi.sh
+  /root/deck-sign-efi.sh \
+  /root/deck-install-jump.sh
 
 systemctl enable deck-startup.service
 

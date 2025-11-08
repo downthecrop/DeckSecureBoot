@@ -75,11 +75,12 @@ while true; do
       1 "Check Boot Status${PEND}" \
       2 "Enable Secure Boot" \
       3 "Signing Utility" \
-      4 "Open root shell (requires USB keyboard)" \
-      5 "--------------------------------" \
-      6 "Reboot" \
-      7 "Poweroff" \
-      8 "Disable Secure Boot"); then
+      4 "Install SteamOS jump loader" \
+      5 "Open root shell (requires USB keyboard)" \
+      6 "--------------------------------" \
+      7 "Reboot" \
+      8 "Poweroff" \
+      9 "Disable Secure Boot"); then
     continue
   fi
 
@@ -87,10 +88,11 @@ while true; do
     1) check_boot_status ;;
     2) OUT=$(/root/deck-enroll.sh 2>&1 || true); dialog --msgbox "$OUT" 22 90 ;;
     3) /root/deck-sign-efi.sh ;;
-    4) open_shell ;;
-    5) : ;;
-    6) reboot ;;
-    7) poweroff ;;
-    8) OUT=$(/root/deck-unenroll.sh 2>&1 || true); dialog --msgbox "$OUT" 22 90 ;;
+    4) /root/deck-install-jump.sh ;;
+    5) open_shell ;;
+    6) : ;;
+    7) reboot ;;
+    8) poweroff ;;
+    9) OUT=$(/root/deck-unenroll.sh 2>&1 || true); dialog --msgbox "$OUT" 22 90 ;;
   esac
 done

@@ -1,331 +1,183 @@
-#!/bin/bash
-set -e
+#!/usr/bin/env bash
+set -euo pipefail
 
-# shellcheck disable=SC1091
-. /root/deck-env.sh
+# set FORCE_REBUILD=1 ./makeefi.sh to force a clean rebuild
+FORCE_REBUILD="${FORCE_REBUILD:-0}"
 
-BACKTITLE="${DECK_SB_BACKTITLE}"
+KEY_DIR="keys"
+PK_KEY="${KEY_DIR}/PK.key"
+PK_CRT="${KEY_DIR}/PK.pem"
 
-if [ "$(id -u)" -ne 0 ]; then
-  echo "This needs to run as root (sbctl writes under /var/lib/sbctl)."
-  exit 1
+OUT_DIR="dist"
+OUT_EFI="${OUT_DIR}/steamos-jump.signed.efi"
+
+# pin to the working grub
+GRUB_COMMIT="2bc0929a2fffbb60995605db6ce46aa3f979a7d2"
+
+BUILD_ROOT="$(pwd)/build-grub"
+GRUB_SRC="${BUILD_ROOT}/grub"
+GRUB_PREFIX="${BUILD_ROOT}/out"
+GRUB_MK="${GRUB_PREFIX}/bin/grub-mkstandalone"
+
+install_build_deps() {
+  pacman -S --needed --noconfirm \
+    git python \
+    autoconf automake pkgconf \
+    gettext texinfo help2man \
+    flex bison libtool \
+    make gcc \
+    sbsigntools
+}
+
+# --- preflight ---
+[[ -f "$PK_KEY" ]] || { echo "ERROR: $PK_KEY missing"; exit 1; }
+[[ -f "$PK_CRT" ]] || { echo "ERROR: $PK_CRT missing"; exit 1; }
+
+install_build_deps
+mkdir -p "$OUT_DIR"
+
+if [[ "$FORCE_REBUILD" == "1" ]]; then
+  echo "[*] FORCE_REBUILD=1 -> removing $BUILD_ROOT"
+  rm -rf "$BUILD_ROOT"
+fi
+mkdir -p "$BUILD_ROOT"
+
+# --- fetch grub ---
+if [[ ! -d "$GRUB_SRC" ]]; then
+  echo "[*] cloning GRUB ..."
+  git clone https://git.savannah.gnu.org/git/grub.git "$GRUB_SRC"
 fi
 
-for bin in sbctl lsblk mount find findmnt; do
-  command -v "$bin" >/dev/null 2>&1 || { echo "$bin not found"; exit 1; }
-done
+cd "$GRUB_SRC"
+echo "[*] checking out GRUB commit $GRUB_COMMIT ..."
+git fetch origin
+git checkout --force "$GRUB_COMMIT"
 
-FIND_TIMEOUT=${FIND_TIMEOUT:-15}
-TIMEOUT_BIN=$(command -v timeout || true)
+# --- build grub if needed ---
+if [[ ! -x "$GRUB_MK" ]]; then
+  echo "[*] patching shim fallback ..."
+  # turn "shim protocols not found" into success
+  sed -i 's/return grub_error (GRUB_ERR_ACCESS_DENIED, N_("shim protocols not found"));/return GRUB_ERR_NONE;/' \
+    grub-core/kern/efi/sb.c
 
-ISO_MOUNT="/run/archiso/bootmnt"
-TMP_EFI_MOUNT_BASE="/run/deck-efi"
-TMP_LINUX_MOUNT_BASE="/run/deck-root"
-mkdir -p "$TMP_EFI_MOUNT_BASE" "$TMP_LINUX_MOUNT_BASE"
+  echo "[*] bootstrap ..."
+  ./bootstrap
 
-LINUX_FSTYPES='ext2|ext3|ext4|btrfs|xfs|f2fs'
-LINUX_GPT_GUIDS=(
-  0FC63DAF-8483-4772-8E79-3D69D8477DE4  # Linux filesystem data
-  44479540-F297-41B2-9AF7-D131D5F0458A  # Linux root (x86)
-  4F68BCE3-E8CD-4DB1-96E7-FBCAF984B709  # Linux root (x86-64)
-)
+  echo "[*] configure ..."
+  ./configure \
+    --with-platform=efi \
+    --target=x86_64 \
+    --prefix="$GRUB_PREFIX"
 
-SEARCH_DIRS=()
-TEMP_MOUNTS=()
-declare -A ADDED_DIRS=()
-declare -A SEEN_FILES=()
+  echo "[*] make ..."
+  make -j"$(nproc)"
 
-cleanup() {
-  for m in "${TEMP_MOUNTS[@]}"; do
-    umount "$m" 2>/dev/null || true
-    rmdir "$m" 2>/dev/null || true
-  done
-}
-trap cleanup EXIT
-
-add_search_dir() {
-  local dir="$1"
-  [ -d "$dir" ] || return 0
-  if [[ -n "$ISO_MOUNT" && "$dir" == "$ISO_MOUNT"* ]]; then
-    return 0
-  fi
-  if [[ -n "${ADDED_DIRS[$dir]:-}" ]]; then
-    return 0
-  fi
-  SEARCH_DIRS+=("$dir")
-  ADDED_DIRS["$dir"]=1
-}
-
-add_candidate() {
-  local path="$1"
-  [ -f "$path" ] || return 0
-  if [[ -n "$ISO_MOUNT" && "$path" == "$ISO_MOUNT"* ]]; then
-    return 0
-  fi
-  if [[ -n "${SEEN_FILES[$path]:-}" ]]; then
-    return 0
-  fi
-  ALL+=("$path")
-  SEEN_FILES["$path"]=1
-}
-
-ROOTS=(
-  /boot
-  /boot/efi
-  /efi
-  /mnt
-  /run/media/*/*
-)
-
-for r in "${ROOTS[@]}"; do
-  for p in $r; do
-    add_search_dir "$p"
-  done
-done
-
-progress_msg() {
-  local msg="$1"
-  dialog --infobox "$msg" 5 70
-}
-
-progress_msg "Scanning disks for EFI files and kernels..."
-
-while read -r dev fstype parttype mnt; do
-  [[ -b "$dev" ]] || continue
-  fstype=${fstype,,}
-  parttype=${parttype^^}
-
-  mount_base=""
-  add_boot_dir=0
-
-  if [[ "$fstype" =~ ^(vfat|fat|fat16|fat32)$ || "$parttype" == "C12A7328-F81F-11D2-BA4B-00A0C93EC93B" ]]; then
-    mount_base="$TMP_EFI_MOUNT_BASE"
-  elif [[ "$fstype" =~ ^($LINUX_FSTYPES)$ ]]; then
-    mount_base="$TMP_LINUX_MOUNT_BASE"
-    add_boot_dir=1
-  else
-    for guid in "${LINUX_GPT_GUIDS[@]}"; do
-      if [[ "$parttype" == "$guid" ]]; then
-        mount_base="$TMP_LINUX_MOUNT_BASE"
-        add_boot_dir=1
-        break
-      fi
-    done
-  fi
-
-  [ -n "$mount_base" ] || continue
-
-  if [ -z "$mnt" ] || [ "$mnt" = "-" ]; then
-    mnt="$mount_base/$(basename "$dev")"
-    mkdir -p "$mnt"
-    if mount -o ro "$dev" "$mnt"; then
-      TEMP_MOUNTS+=("$mnt")
-    else
-      rmdir "$mnt"
-      continue
-    fi
-  fi
-
-  if [ "$mount_base" = "$TMP_EFI_MOUNT_BASE" ]; then
-    add_search_dir "$mnt/EFI"
-    progress_msg "Mounted EFI $(basename "$dev")"
-  else
-    add_search_dir "$mnt/boot"
-    add_search_dir "$mnt/boot/EFI"
-    progress_msg "Mounted Linux $(basename "$dev")"
-  fi
-done < <(lsblk -rpno NAME,FSTYPE,PARTTYPE,MOUNTPOINT)
-
-ALL=()
-
-run_find() {
-  local dir="$1"
-  [ -d "$dir" ] || return
-  local opts
-  if [[ "$dir" == *EFI* ]]; then
-    opts=(-iname '*.efi')
-  else
-    opts=( -iname 'vmlinuz*' )
-  fi
-  local cmd=(find "$dir" -maxdepth 4 -type f "${opts[@]}" -print0)
-  if [ -n "$TIMEOUT_BIN" ]; then
-    "$TIMEOUT_BIN" "$FIND_TIMEOUT" "${cmd[@]}" 2>/dev/null
-  else
-    "${cmd[@]}" 2>/dev/null
-  fi
-}
-
-ensure_rw() {
-  local path="$1"
-  local mp opts
-  mp=$(findmnt -rno TARGET -T "$path" 2>/dev/null || true)
-  opts=$(findmnt -rno OPTIONS -T "$path" 2>/dev/null || true)
-  [ -n "$mp" ] || return 0
-  if [[ "$opts" == *ro* ]]; then
-    if mount -o remount,rw "$mp" 2>/dev/null; then
-      return 0
-    fi
-    printf 'Filesystem %s is mounted read-only. Remount it writable and try again.\n' "$mp"
-    return 1
-  fi
-  return 0
-}
-
-for dir in "${SEARCH_DIRS[@]}"; do
-  while IFS= read -r -d '' f; do
-    add_candidate "$f"
-  done < <(run_find "$dir" || true)
-done
-dialog --clear
-
-ALL=("${ALL[@]}")
-
-loader_variant_label() {
-  local lower="$1"
-  if [[ "$lower" == *mmx64*.efi* ]]; then
-    echo "MokManager"
-  elif [[ "$lower" == *shimx64*.efi* ]]; then
-    echo "Shim"
-  elif [[ "$lower" == *grubx64*.efi* ]]; then
-    echo "GRUB"
-  else
-    echo ""
-  fi
-}
-
-format_display_path() {
-  local path="$1"
-  local display="$path"
-  for prefix in "$TMP_EFI_MOUNT_BASE" "$TMP_LINUX_MOUNT_BASE"; do
-    if [[ -n "$prefix" && "$display" == "$prefix"* ]]; then
-      display="${display#"$prefix"}"
-      display="${display#/}"
-    fi
-  done
-  echo "$display"
-}
-
-sanitize_dialog_text() {
-  # Strip non-printable bytes so dialog doesn't show garbled characters
-  LC_ALL=C tr -cd '\11\12\15\40-\176'
-}
-
-show_dialog_msg() {
-  local heading="$1"
-  local body="$2"
-  local height="${3:-15}"
-  local width="${4:-90}"
-
-  if [ -z "$body" ]; then
-    body="(no sbctl output)"
-  fi
-
-  local msg
-  printf -v msg '%s\n\n%s' "$heading" "$body"
-  dialog --msgbox "$msg" "$height" "$width"
-}
-
-guess_kind() {
-  local path="$1"
-  local lower="${path,,}"
-  local variant
-  variant=$(loader_variant_label "$lower")
-
-  if [[ "$lower" == *steamcl*.efi ]]; then
-    echo "SteamOS (Default)"
-  elif [[ "$lower" == *efi/steamos/* && "$lower" == *grub*.efi* ]]; then
-    echo "SteamOS (GRUB)"
-  elif [[ "$lower" == *efi/steamos/* ]]; then
-    echo "SteamOS loader"
-  elif [[ "$lower" == *vmlinuz* ]]; then
-    echo "Linux kernel"
-  elif [[ "$lower" == *ubuntu* ]]; then
-    if [ -n "$variant" ]; then
-      echo "Ubuntu $variant"
-    else
-      echo "Ubuntu loader"
-    fi
-  elif [[ "$lower" == *fedora* ]]; then
-    if [ -n "$variant" ]; then
-      echo "Fedora $variant"
-    else
-      echo "Fedora loader"
-    fi
-  elif [[ "$lower" == *microsoft* || "$lower" == *bootmgfw.efi* ]]; then
-    echo "Windows bootmgfw"
-  elif [[ "$lower" == *efi/boot/bootx64.efi* ]]; then
-    echo "Generic UEFI bootloader"
-  elif [ -n "$variant" ]; then
-    echo "$variant"
-  else
-    echo "Unknown EFI"
-  fi
-}
-
-if [ "${#ALL[@]}" -eq 0 ]; then
-  if [ "${#SEARCH_DIRS[@]}" -gt 0 ]; then
-    checked_dirs=$(printf "%s " "${SEARCH_DIRS[@]}")
-  else
-    checked_dirs="(no candidate directories)"
-  fi
-
-  dialog --msgbox "No EFI files were found.\nChecked: ${checked_dirs}.\nMount your target ESP and try again." 11 74
-  exit 1
+  echo "[*] make install ..."
+  make install
+else
+  echo "[*] grub already built, skipping (use FORCE_REBUILD=1 to rebuild)"
 fi
 
-while true; do
-  MENU=()
-  i=1
-  STEAM_CAND=()
-  OTHER_CAND=()
-  for c in "${ALL[@]}"; do
-    if [[ "$c" == *EFI/steamos/* || "$c" == *EFI/STEAMOS/* || "$c" == *steamcl*.efi ]]; then
-      STEAM_CAND+=("$c")
-    elif [[ "$c" == *vmlinuz* ]]; then
-      STEAM_CAND+=("$c")
-    else
-      OTHER_CAND+=("$c")
+cd - >/dev/null
+
+# --- build the tiny builtin config ---
+CFG_FILE="$(mktemp)"
+EFI_RAW="$(mktemp)"
+
+cat > "$CFG_FILE" <<'EOF'
+set default=0
+set timeout=3
+
+# helper: try to source from a given device+path, return if ok
+function try_source {
+    if [ -f $1 ]; then
+        source $1
+        return
     fi
-  done
+}
 
-  ORDERED=("${STEAM_CAND[@]}" "${OTHER_CAND[@]}")
+# 1) best case: firmware gave us the real path it loaded from
+#    e.g. (hd0,gpt1)/efi/steamos or (hd0)/EFI/steamos
+if [ -n "$cmdpath" ]; then
+    set mydir="$cmdpath"
+    # try exactly beside us first
+    if [ -f $mydir/deck-sb.cfg ]; then
+        source $mydir/deck-sb.cfg
+        return
+    fi
 
-  for c in "${ORDERED[@]}"; do
-    KIND=$(guess_kind "$c")
-    DISPLAY_PATH=$(format_display_path "$c")
-    MENU+=("$i" "$KIND :: $DISPLAY_PATH")
-    i=$((i+1))
-  done
+    # sometimes cmdpath is just (hd0)/EFI/steamos (no partition)
+    # extract the disk part with regexp
+    insmod regexp
+    regexp --set=1:disk '^\(([^,)]+)\)/' "$cmdpath"
+    if [ -n "$disk" ]; then
+        # probe a few likely partitions
+        for p in 1 2 3 4 5 6 7 8; do
+            # GPT style
+            if [ -f ($disk,gpt$p)/efi/steamos/deck-sb.cfg ]; then
+                source ($disk,gpt$p)/efi/steamos/deck-sb.cfg
+                return
+            fi
+            if [ -f ($disk,gpt$p)/EFI/steamos/deck-sb.cfg ]; then
+                source ($disk,gpt$p)/EFI/steamos/deck-sb.cfg
+                return
+            fi
+            # MBR style
+            if [ -f ($disk,msdos$p)/efi/steamos/deck-sb.cfg ]; then
+                source ($disk,msdos$p)/efi/steamos/deck-sb.cfg
+                return
+            fi
+            if [ -f ($disk,msdos$p)/EFI/steamos/deck-sb.cfg ]; then
+                source ($disk,msdos$p)/EFI/steamos/deck-sb.cfg
+                return
+            fi
+        done
+    fi
+fi
 
-  CHOICE=$(dialog --clear --stdout --cancel-label "Back" --menu "Select EFI / kernel to sign" 0 0 0 "${MENU[@]}") || break
-  TARGET="${ORDERED[$((CHOICE-1))]}"
+# 2) fallback: search (lowercase)
+search --file /efi/steamos/deck-sb.cfg --set=esp
+if [ -n "$esp" ]; then
+    source ($esp)/efi/steamos/deck-sb.cfg
+    return
+fi
 
-  if ! ERR=$(ensure_rw "$TARGET"); then
-    dialog --msgbox "${ERR:-Unable to access target.}" 8 70
-    continue
-  fi
+# 3) fallback: search (uppercase)
+search --file /EFI/steamos/deck-sb.cfg --set=esp
+if [ -n "$esp" ]; then
+    source ($esp)/EFI/steamos/deck-sb.cfg
+    return
+fi
 
-  lower_target=${TARGET,,}
-  if [[ "$lower_target" == *microsoft* || "$lower_target" == *bootmgfw.efi* ]]; then
-    dialog --yesno "This looks like a Windows EFI loader.\nResigning this EFI is not recommended.\nContinue anyway?" 12 60 || continue
-  fi
+menuentry 'Deck SB loader (no config found)' {
+    echo 'No deck-sb.cfg found beside this loader or on the ESP.'
+    echo 'Run the SB ISO to generate it.'
+    sleep 5
+}
+EOF
 
-  dialog --infobox "Signing:\n$TARGET" 6 70
-  RAW_OUTPUT=$(sbctl sign -s "$TARGET" 2>&1)
-  STATUS=$?
-  OUTPUT=$(printf '%s' "$RAW_OUTPUT" | sanitize_dialog_text)
+echo "[*] building standalone GRUB EFI ..."
+"$GRUB_MK" \
+  -O x86_64-efi \
+  -o "$EFI_RAW" \
+  --modules="part_gpt part_msdos fat ext2 search search_fs_file normal efi_gop efi_uga regexp" \
+  "boot/grub/grub.cfg=${CFG_FILE}"
 
-  if [ $STATUS -eq 0 ]; then
-    show_dialog_msg "Signing succeeded" "$OUTPUT"
-    continue
-  fi
+echo "[*] signing EFI ..."
+sbsign \
+  --key "$PK_KEY" \
+  --cert "$PK_CRT" \
+  --output "$OUT_EFI" \
+  "$EFI_RAW"
 
-  if printf '%s' "$OUTPUT" | grep -qi 'already been signed'; then
-    show_dialog_msg "Already signed" "$OUTPUT"
-    continue
-  fi
+rm -f "$CFG_FILE" "$EFI_RAW"
 
-  show_dialog_msg "Signing failed (exit $STATUS)" "$OUTPUT"
-done
-
-exit 0
+echo
+echo "[+] built and signed: $OUT_EFI"
+echo "Deploy on Deck:"
+echo "  sudo mount /dev/nvme0n1p1 /mnt/esp"
+echo "  sudo mkdir -p /mnt/esp/efi/steamos"
+echo "  sudo cp $OUT_EFI /mnt/esp/efi/steamos/deck-sb-loader.efi"
+echo "  sudo efibootmgr -c -d /dev/nvme0n1 -p 1 -l '\\EFI\\steamos\\deck-sb-loader.efi' -L 'Deck SB Loader'"
+echo
+echo "Then have your ISO write /efi/steamos/deck-sb.cfg (or /EFI/steamos/deck-sb.cfg) on that same ESP."

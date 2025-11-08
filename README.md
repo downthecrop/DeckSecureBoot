@@ -34,8 +34,7 @@ Keeping these pieces separate makes it easier to audit changes, swap payload bit
 - A ncurses menu with:
   1. **Check Boot Status** (UEFI? efivars? secureboot?)
   2. **Enroll / Enable Secure Boot** (runs `sbctl enroll-keys -m` with our baked keys)
-  3. **Sign SteamOS / Deck loader**
-  4. **Sign another EFI (Ubuntu/Mint/etc)**
+  3. **Signing Utility** (sign SteamOS or any other EFI loader in one place)
   5. **Root shell**
   7. **Reboot / Poweroff**
   9. **Unenroll / Disable Secure Boot**
@@ -63,12 +62,7 @@ After that:
 - anything signed by **our** keys → OK
 - anything not signed → **blocked**
 
-SteamOS and other Linux installs often ship **unsigned** or **signed with somebody else’s key**, so the firmware doesn’t know to trust it. That’s why we have two menu entries for signing:
-
-- “Sign SteamOS / Deck loader”
-- “Sign another EFI”
-
-Those just take the existing EFI binary and **add our signature** to it so it passes Secure Boot with our key.
+SteamOS and other Linux installs often ship **unsigned** or **signed with somebody else’s key**, so the firmware doesn’t know to trust it. The Signing Utility entry simply takes the EFI binary you point at (SteamOS or anything else) and **adds our signature** so it passes Secure Boot with our key.
 
 **Important:** if later you **disable** Secure Boot or clear vars, you do **not** have to “unsign” SteamOS or anything else. Signatures are just extra data. If Secure Boot is off, the firmware ignores them.
 
@@ -173,8 +167,8 @@ You can also point the resigner at other similar ISOs to make them bootable unde
 ## Building it yourself
 
 1. Use an Arch install or Arch container (the builder shells out to `pacman`, `mkarchiso`, etc.).
-2. Install `archiso`, `grub`, `sbctl`, `sbsigntools` (the script will auto-install them if you run it as root on Arch).
-3. Run `sudo ./build.sh`. You can override paths with env vars such as `WORKDIR`, `PROFILE_DIR`, `PAYLOAD_DIR`, or `KEYS_DIR` if you keep your assets elsewhere.
+2. Install `archiso`, `grub`, `sbctl`, `sbsigntools` (the script auto-installs them if you run it as root on Arch).
+3. Run `sudo ./build.sh` from the repo root. It stages the profile, payload, and keys automatically and drops finished ISOs in `./out/` (or `/out` if that directory exists).
 
 The builder drops ISOs in `/out` when that directory exists (handy inside containers) or `./out/` otherwise. When `resigner.sh` is detected next to `build.sh`, the newly built ISO gets re-signed automatically and you’ll see both `*.iso` and `*-signed.iso` outputs.
 
@@ -195,4 +189,3 @@ You can also copy the ISO contents to a bootable partition and boot it locally i
 
 - Original method / research: **@ryanrudolfoba**  
   https://github.com/ryanrudolfoba/SecureBootForSteamDeck
-- This project: turn the guide into an Archiso live image, bake keys, add fixed GUID, add post-build resigner.

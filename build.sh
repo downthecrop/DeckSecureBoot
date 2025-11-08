@@ -154,7 +154,8 @@ chmod +x \
   airootfs/root/customize_airootfs.sh \
   airootfs/root/deck-enroll.sh \
   airootfs/root/deck-unenroll.sh \
-  airootfs/root/deck-sign-efi.sh
+  airootfs/root/deck-sign-efi.sh \
+  airootfs/root/deck-install-jump.sh
 
 # ---------------------------------------------------------------------------
 # 7) baked keys (two places)
