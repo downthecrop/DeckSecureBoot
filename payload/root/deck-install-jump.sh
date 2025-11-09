@@ -6,9 +6,14 @@ set -euo pipefail
 
 BACKTITLE="${DECK_SB_BACKTITLE}"
 
-JUMP_SOURCE="/root/steamos-jump.signed.efi"
 TARGET_FILENAME="jump.efi"
 EFI_LABEL='SteamOS (custom jump)'
+DECK_SB_FILES_DIR="/root/deck-sb-files"
+JUMP_SOURCE="$DECK_SB_FILES_DIR/steamos-jump.signed.efi"
+WATCHDOG_SCRIPT_TEMPLATE="$DECK_SB_FILES_DIR/deck-sb-bootfix.sh"
+WATCHDOG_SERVICE_TEMPLATE="$DECK_SB_FILES_DIR/deck-sb-bootfix.service"
+CLOVER_ENTRY_TEMPLATE="$DECK_SB_FILES_DIR/clover-jump-entry.plist"
+DECK_SB_CFG_TEMPLATE="$DECK_SB_FILES_DIR/deck-sb.cfg.tmpl"
 
 FIND_TIMEOUT=${FIND_TIMEOUT:-15}
 TIMEOUT_BIN=$(command -v timeout || true)
@@ -16,6 +21,7 @@ TIMEOUT_BIN=$(command -v timeout || true)
 ISO_MOUNT="/run/archiso/bootmnt"
 TMP_EFI_MOUNT_BASE="/run/deck-efi"
 TMP_LINUX_MOUNT_BASE="/run/deck-root"
+STEAMOS_ROOT_BASE="/run/deck-os"
 
 LINUX_FSTYPES='ext2|ext3|ext4|btrfs|xfs|f2fs'
 LINUX_GPT_GUIDS=(
@@ -32,7 +38,7 @@ ROOTS=(
   /run/media/*/*
 )
 
-mkdir -p "$TMP_EFI_MOUNT_BASE" "$TMP_LINUX_MOUNT_BASE"
+mkdir -p "$TMP_EFI_MOUNT_BASE" "$TMP_LINUX_MOUNT_BASE" "$STEAMOS_ROOT_BASE"
 
 require_bins() {
   local missing=()
@@ -152,7 +158,6 @@ run_find_steamcl() {
 run_find_grub() {
   local dir="$1"
   [ -d "$dir" ] || return
-  # we specifically want .../EFI/steamos/grubx64.efi
   local cmd=(find "$dir" -maxdepth 6 -type f -path '*/EFI/steamos/grubx64.efi' -print0)
   if [ -n "$TIMEOUT_BIN" ]; then
     "$TIMEOUT_BIN" "$FIND_TIMEOUT" "${cmd[@]}" 2>/dev/null
@@ -257,11 +262,9 @@ collect_base_candidates() {
   BASE_CANDIDATES=()
   GRUB_CANDIDATES=()
   for dir in "${SEARCH_DIRS[@]}"; do
-    # steamcl
     while IFS= read -r -d '' f; do
       add_base_candidate "$f"
     done < <(run_find_steamcl "$dir" || true)
-    # grubx64.efi
     while IFS= read -r -d '' g; do
       add_grub_candidate "$g"
     done < <(run_find_grub "$dir" || true)
@@ -297,13 +300,11 @@ select_grub_for_base() {
   local steamcl_mount="$1"
   local chosen=""
 
-  # if we have none, we'll just fall back later
   if [ "${#GRUB_CANDIDATES[@]}" -eq 0 ]; then
     SELECTED_GRUB=""
     return
   fi
 
-  # try to find one on the same mount as the steamcl
   for g in "${GRUB_CANDIDATES[@]}"; do
     local gm
     gm=$(findmnt -rno TARGET -T "$g" 2>/dev/null || true)
@@ -313,7 +314,6 @@ select_grub_for_base() {
     fi
   done
 
-  # else just pick the first
   if [ -z "$chosen" ]; then
     chosen="${GRUB_CANDIDATES[0]}"
   fi
@@ -321,32 +321,109 @@ select_grub_for_base() {
   SELECTED_GRUB="$chosen"
 }
 
-relative_loader_path() {
-  local mount_point="$1"
-  local dir="$2"
-  local rel=""
-  if [ "$dir" = "$mount_point" ]; then
-    rel="$TARGET_FILENAME"
-  else
-    rel="${dir#$mount_point/}/$TARGET_FILENAME"
+is_steamos_tree() {
+  local dir="$1"
+  [ -n "$dir" ] || return 1
+  [ -f "$dir/etc/os-release" ] || return 1
+  if grep -qi "SteamOS" "$dir/etc/os-release" 2>/dev/null; then
+    return 0
   fi
-  rel="${rel#/}"
-  echo "$rel"
+  return 1
 }
 
-write_cfg_beside() {
-  local steamcl_dir="$1"  # .../EFI/steamos
-  local grub_dev="$2"     # backing device of the grub ESP
-  local cfg_path="$steamcl_dir/deck-sb.cfg"
+locate_steamos_root_within() {
+  local base="$1"
+  local fstype="$2"
+  local candidate
+
+  if is_steamos_tree "$base"; then
+    printf '%s\n' "$base"
+    return 0
+  fi
+
+  local guesses=(
+    '@rootfs'
+    '@rootfs.ro'
+    'rootfs'
+    'rootfs.ro'
+    'steamroot'
+    'steamrootfs'
+  )
+
+  local rel
+  for rel in "${guesses[@]}"; do
+    candidate="$base/$rel"
+    if is_steamos_tree "$candidate"; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done
+
+  if [ "$fstype" = "btrfs" ] && command -v find >/dev/null 2>&1; then
+    local match etc_dir root_dir
+    match=$(find "$base" -maxdepth 5 -path '*/etc/os-release' -print -quit 2>/dev/null || true)
+    if [ -n "$match" ] && grep -qi "SteamOS" "$match" 2>/dev/null; then
+      etc_dir=$(dirname "$match")
+      root_dir=$(dirname "$etc_dir")
+      printf '%s\n' "$root_dir"
+      return 0
+    fi
+  fi
+
+  return 1
+}
+
+prepare_steamos_root_for_write() {
+  local rootmp="$1"
+  local fstype
+  STEAMOS_PREP_RW_MODE=""
+
+  if ensure_rw_mount "$rootmp"; then
+    STEAMOS_PREP_RW_MODE="already-rw"
+    return 0
+  fi
+
+  fstype=$(findmnt -nr -T "$rootmp" -o FSTYPE 2>/dev/null || true)
+
+  if [ "$fstype" = "btrfs" ] && command -v btrfs >/dev/null 2>&1; then
+    if btrfs property get -ts "$rootmp" ro >/dev/null 2>&1; then
+      btrfs property set -ts "$rootmp" ro false >/dev/null 2>&1 || true
+      if ensure_rw_mount "$rootmp"; then
+        STEAMOS_PREP_RW_MODE="btrfs-property"
+        return 0
+      fi
+    fi
+  fi
+
+  if [ -x "$rootmp/usr/bin/steamos-readonly" ]; then
+    chroot "$rootmp" /usr/bin/steamos-readonly disable 2>/dev/null || true
+    if ensure_rw_mount "$rootmp"; then
+      STEAMOS_PREP_RW_MODE="steamos-readonly"
+      return 0
+    fi
+  fi
+
+  return 1
+}
+
+write_cfg_to_custom_dir() {
+  local custom_dir="$1"
+  local grub_dev="$2"
+  local cfg_path="$custom_dir/deck-sb.cfg"
+  local kernel_block extra_menu_entries
 
   progress_dialog "Writing SteamOS boot config..."
 
-  mkdir -p "$steamcl_dir" || {
-    error_dialog "Failed to create $steamcl_dir"
+  mkdir -p "$custom_dir" || {
+    error_dialog "Failed to create $custom_dir"
     exit 1
   }
 
-  # find a root on the same disk as grub_dev
+  if [ ! -f "$DECK_SB_CFG_TEMPLATE" ]; then
+    error_dialog "Missing deck-sb.cfg template at $DECK_SB_CFG_TEMPLATE"
+    exit 1
+  fi
+
   local disk root_uuid=""
   disk=$(lsblk -nrpo PKNAME "$grub_dev" 2>/dev/null | head -n1)
   [[ "$disk" != /dev/* ]] && disk="/dev/$disk"
@@ -361,33 +438,45 @@ write_cfg_beside() {
     fi
   done < <(lsblk -rpno NAME,FSTYPE,PKNAME)
 
+  if [ -n "$root_uuid" ]; then
+    kernel_block=$(cat <<EOF
+    search --no-floppy --fs-uuid --set=root $root_uuid
+    linux /boot/vmlinuz-linux-neptune-611 \
+        console=tty1 \
+        rd.luks=0 rd.lvm=0 rd.md=0 rd.dm=0 \
+        rd.systemd.gpt_auto=0 \
+        rd.steamos.efi=$grub_dev \
+        loglevel=3 \
+        plymouth.ignore-serial-consoles \
+        fbcon=rotate:1
+    initrd /boot/amd-ucode.img /boot/initramfs-linux-neptune-611.img
+EOF
+)
+  else
+    kernel_block=$(cat <<EOF
+    linux /boot/vmlinuz-linux-neptune-611 rd.steamos.efi=$grub_dev \
+        fbcon=rotate:1
+    initrd /boot/amd-ucode.img /boot/initramfs-linux-neptune-611.img
+EOF
+)
+  fi
+
+  extra_menu_entries=$(build_extra_menu_entries)
+
   {
-    echo "# auto-generated by Deck SB ISO"
-    echo "menuentry 'SteamOS (shimless)' {"
-    echo "    insmod part_gpt"
-    echo "    insmod btrfs"
-    echo "    insmod gzio"
-    if [ -n "$root_uuid" ]; then
-      echo "    search --no-floppy --fs-uuid --set=root $root_uuid"
-      echo "    linux /boot/vmlinuz-linux-neptune-611 \\"
-      echo "        console=tty1 \\"
-      echo "        rd.luks=0 rd.lvm=0 rd.md=0 rd.dm=0 \\"
-      echo "        rd.systemd.gpt_auto=0 \\"
-      echo "        rd.steamos.efi=$grub_dev \\"
-      echo "        loglevel=3 \\"
-      echo "        plymouth.ignore-serial-consoles"
-      echo "    initrd /boot/amd-ucode.img /boot/initramfs-linux-neptune-611.img"
-    else
-      echo "    # could not auto-detect root, please edit"
-      echo "    linux /boot/vmlinuz-linux-neptune-611 rd.steamos.efi=$grub_dev"
-      echo "    initrd /boot/amd-ucode.img /boot/initramfs-linux-neptune-611.img"
-    fi
-    echo "}"
-    if [ -f "$steamcl_dir/grubx64.efi" ]; then
-      echo "menuentry 'SteamOS (official GRUB)' {"
-      echo "    chainloader /EFI/steamos/grubx64.efi"
-      echo "}"
-    fi
+    while IFS= read -r line || [ -n "$line" ]; do
+      case "$line" in
+        __DECK_SB_KERNEL_BLOCK__)
+          printf '%s\n' "$kernel_block"
+          ;;
+        __DECK_SB_EXTRA_MENU__)
+          [ -n "$extra_menu_entries" ] && printf '%s\n' "$extra_menu_entries"
+          ;;
+        *)
+          printf '%s\n' "$line"
+          ;;
+      esac
+    done < "$DECK_SB_CFG_TEMPLATE"
   } > "$cfg_path" || {
     error_dialog "Failed to write $cfg_path"
     exit 1
@@ -396,12 +485,260 @@ write_cfg_beside() {
   chmod 0644 "$cfg_path" 2>/dev/null || true
 }
 
+build_extra_menu_entries() {
+  cat <<'EOF'
+
+# Automatically detect Windows and Clover bootloaders when present
+set deck_win_path=''
+if search --file /EFI/Microsoft/Boot/bootmgfw.efi --set=deck_win; then
+    set deck_win_path='/EFI/Microsoft/Boot/bootmgfw.efi'
+elif search --file /EFI/Microsoft/bootmgfw.efi --set=deck_win; then
+    set deck_win_path='/EFI/Microsoft/bootmgfw.efi'
+fi
+
+if test -n "$deck_win_path"; then
+    menuentry 'Windows Boot Manager' {
+        insmod part_gpt
+        insmod fat
+        insmod chain
+        search --no-floppy --file $deck_win_path --set=root
+        chainloader $deck_win_path
+    }
+fi
+
+set deck_clover_path=''
+if search --file /EFI/CLOVER/CLOVERX64.efi --set=deck_clover; then
+    set deck_clover_path='/EFI/CLOVER/CLOVERX64.efi'
+elif search --file /EFI/Clover/CLOVERX64.efi --set=deck_clover; then
+    set deck_clover_path='/EFI/Clover/CLOVERX64.efi'
+elif search --file /efi/clover/CLOVERX64.efi --set=deck_clover; then
+    set deck_clover_path='/efi/clover/CLOVERX64.efi'
+elif search --file /EFI/CLOVER/cloverx64.efi --set=deck_clover; then
+    set deck_clover_path='/EFI/CLOVER/cloverx64.efi'
+elif search --file /EFI/Clover/cloverx64.efi --set=deck_clover; then
+    set deck_clover_path='/EFI/Clover/cloverx64.efi'
+elif search --file /efi/clover/cloverx64.efi --set=deck_clover; then
+    set deck_clover_path='/efi/clover/cloverx64.efi'
+fi
+
+if test -n "$deck_clover_path"; then
+    menuentry 'Clover Bootloader' {
+        insmod part_gpt
+        insmod fat
+        insmod chain
+        search --no-floppy --file $deck_clover_path --set=root
+        chainloader $deck_clover_path
+    }
+fi
+
+set deck_steamcl_path=''
+if search --file /EFI/steamos/steamcl.efi --set=deck_steamcl; then
+    set deck_steamcl_path='/EFI/steamos/steamcl.efi'
+elif search --file /efi/steamos/steamcl.efi --set=deck_steamcl; then
+    set deck_steamcl_path='/efi/steamos/steamcl.efi'
+fi
+
+if test -n "$deck_steamcl_path"; then
+    menuentry 'SteamOS Official Bootloader' {
+        insmod part_gpt
+        insmod fat
+        insmod chain
+        search --no-floppy --file $deck_steamcl_path --set=root
+        chainloader $deck_steamcl_path
+    }
+fi
+EOF
+}
+
+maybe_update_clover_config() {
+  local decksb_dir="$1"
+  local efi_root
+  local clover_dir=""
+  local config_path
+
+  efi_root=$(dirname "$decksb_dir")
+
+  for candidate in \
+      "$efi_root/clover" \
+      "$efi_root/Clover"; do
+    if [ -d "$candidate" ] && [ -f "$candidate/config.plist" ]; then
+      clover_dir="$candidate"
+      break
+    fi
+  done
+
+  if [ -z "$clover_dir" ]; then
+    return 0
+  fi
+
+  config_path="$clover_dir/config.plist"
+
+  if [ ! -f "$CLOVER_ENTRY_TEMPLATE" ]; then
+    info_dialog "Clover directory detected at $(format_display_path "$clover_dir"), but the entry template is missing."
+    return 0
+  fi
+
+  if grep -q "SteamOS Jump Loader" "$config_path" 2>/dev/null; then
+    return 0
+  fi
+
+  progress_dialog "Adding SteamOS Jump Loader to Clover config..."
+  local tmp_file
+  tmp_file=$(mktemp) || {
+    info_dialog "Failed to create temporary file while editing $(format_display_path "$config_path")."
+    return 1
+  }
+
+  if awk -v tpl="$CLOVER_ENTRY_TEMPLATE" '
+BEGIN {
+  inserted = 0
+  seen_entries_key = 0
+}
+{
+  print $0
+
+  if (!inserted && seen_entries_key && index($0, "<array>") > 0) {
+    while ((getline line < tpl) > 0) {
+      print line
+    }
+    close(tpl)
+    inserted = 1
+    seen_entries_key = 0
+  }
+
+  if (!inserted && index($0, "<key>Entries</key>") > 0) {
+    seen_entries_key = 1
+  }
+}
+END {
+  exit inserted ? 0 : 1
+}
+' "$config_path" > "$tmp_file"; then
+    if mv "$tmp_file" "$config_path"; then
+      dialog --backtitle "$BACKTITLE" --msgbox "Clover config found at $(format_display_path "$config_path").\nA SteamOS Jump Loader entry was added to the top of its boot menu.\n\nReminder: re-sign Clover's EFI binaries with deck-sign-efi.sh so Secure Boot trusts them." 12 80
+      return 0
+    fi
+  fi
+
+  rm -f "$tmp_file" 2>/dev/null || true
+  info_dialog "Failed to update Clover config at $(format_display_path "$config_path"). Add the SteamOS Jump Loader entry manually."
+  return 1
+}
+
 confirm_overwrite() {
   local path="$1"
   if [ ! -f "$path" ]; then
     return 0
   fi
-  dialog --backtitle "$BACKTITLE" --yesno "${TARGET_FILENAME} already exists at $(format_display_path "$path").\nOverwrite it?" 10 70
+  dialog --backtitle "$BACKTITLE" --yesno "$(basename "$path") already exists at $(format_display_path "$path").\nOverwrite it?" 10 70
+}
+
+purge_existing_boot_entries() {
+  local label="$1"
+  local line id
+  while IFS= read -r line; do
+    case "$line" in
+      Boot[0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f]*"$label"*)
+        id=${line%% *}
+        id=${id#Boot}
+        id=${id%\*}
+        efibootmgr -b "$id" -B >/dev/null 2>&1 || true
+        ;;
+    esac
+  done < <(efibootmgr 2>/dev/null || true)
+}
+
+# --- new: find actual SteamOS root and install a watchdog service there
+find_steamos_root() {
+  local partmp candidate mounted_here
+  while read -r dev fstype parttype mnt; do
+    [[ -b "$dev" ]] || continue
+    local lowerfstype="${fstype,,}"
+    # skip obvious ESP/fat
+    if [[ "$lowerfstype" =~ ^(vfat|fat|fat16|fat32)$ ]]; then
+      continue
+    fi
+    # only try linuxy fs
+    if [[ "$lowerfstype" =~ ^(ext4|btrfs|xfs|f2fs)$ ]]; then
+      partmp="$mnt"
+      mounted_here=0
+      if [ -z "$partmp" ] || [ "$partmp" = "-" ]; then
+        partmp="$STEAMOS_ROOT_BASE/$(basename "$dev")"
+        mkdir -p "$partmp"
+        if mount "$dev" "$partmp"; then
+          TEMP_MOUNTS+=("$partmp")
+          mounted_here=1
+        else
+          rmdir "$partmp"
+          continue
+        fi
+      fi
+
+      candidate=$(locate_steamos_root_within "$partmp" "$lowerfstype" 2>/dev/null || true)
+      if [ -n "$candidate" ] && is_steamos_tree "$candidate"; then
+        echo "$candidate"
+        return 0
+      fi
+
+      if [ "$mounted_here" -eq 1 ]; then
+        umount "$partmp" 2>/dev/null || true
+        rmdir "$partmp" 2>/dev/null || true
+        # remove the last temp mount we just added
+        local last_index=$(( ${#TEMP_MOUNTS[@]} - 1 ))
+        unset "TEMP_MOUNTS[$last_index]"
+      fi
+    fi
+  done < <(lsblk -rpno NAME,FSTYPE,PARTTYPE,MOUNTPOINT)
+  return 1
+}
+
+install_watchdog_into_root() {
+  local rootmp="$1"
+  local service_dir="$rootmp/etc/systemd/system"
+  local script_path="$service_dir/deck-sb-bootfix.sh"
+  local unit_path="$service_dir/deck-sb-bootfix.service"
+
+  local pretty_root
+  pretty_root=$(format_display_path "$rootmp")
+  progress_dialog "SteamOS root detected at $pretty_root. Checking write access..."
+
+  if ! prepare_steamos_root_for_write "$rootmp"; then
+    return 1
+  fi
+
+  case "$STEAMOS_PREP_RW_MODE" in
+    btrfs-property)
+      info_dialog "SteamOS root was read-only. Toggled the Btrfs subvolume property before writing inside $pretty_root."
+      ;;
+    steamos-readonly)
+      info_dialog "SteamOS root was read-only. Chrooted to run steamos-readonly disable so files can be written."
+      ;;
+    already-rw)
+      info_dialog "SteamOS root is already writable; proceeding with watchdog install."
+      ;;
+  esac
+
+  mkdir -p "$service_dir" 2>/dev/null || return 1
+
+  if [ ! -f "$WATCHDOG_SCRIPT_TEMPLATE" ] || [ ! -f "$WATCHDOG_SERVICE_TEMPLATE" ]; then
+    error_dialog "Watchdog templates are missing from the live environment."
+    return 1
+  fi
+
+  progress_dialog "Writing deck-sb-bootfix watchdog files into $pretty_root..."
+  if ! install -m 0755 "$WATCHDOG_SCRIPT_TEMPLATE" "$script_path"; then
+    error_dialog "Failed to copy deck-sb-bootfix.sh into $pretty_root."
+    return 1
+  fi
+
+  if ! install -m 0644 "$WATCHDOG_SERVICE_TEMPLATE" "$unit_path"; then
+    error_dialog "Failed to copy deck-sb-bootfix.service into $pretty_root."
+    return 1
+  fi
+
+  info_dialog "Created deck-sb-bootfix.sh and deck-sb-bootfix.service inside $pretty_root. Enable deck-sb-bootfix.service from SteamOS when you're ready."
+
+  return 0
 }
 
 install_jump_loader() {
@@ -410,8 +747,8 @@ install_jump_loader() {
 
   local steamcl_mount steamcl_source
   local grub_source=""
-  local target_dir target_path
-  local partnum disk rel_path windows_path output
+  local custom_dir custom_jump
+  local partnum disk windows_path output
 
   steamcl_mount=$(findmnt -rno TARGET -T "$steamcl_path" 2>/dev/null || true)
   steamcl_source=$(findmnt -rno SOURCE -T "$steamcl_path" 2>/dev/null || true)
@@ -427,12 +764,10 @@ install_jump_loader() {
     exit 1
   fi
 
-  # determine grub backing device (for rd.steamos.efi)
   if [ -n "$grub_path" ]; then
     grub_source=$(findmnt -rno SOURCE -T "$grub_path" 2>/dev/null || true)
     grub_source=$(clean_source_path "$grub_source")
   fi
-  # fallback: use the same as steamcl
   if [ -z "$grub_source" ]; then
     grub_source="$steamcl_source"
   fi
@@ -442,21 +777,21 @@ install_jump_loader() {
     exit 1
   fi
 
-  target_dir=$(dirname "$steamcl_path")
-  target_path="$target_dir/$TARGET_FILENAME"
+  custom_dir="$steamcl_mount/EFI/deck-sb"
+  mkdir -p "$custom_dir"
+  custom_jump="$custom_dir/$TARGET_FILENAME"
 
-  if ! confirm_overwrite "$target_path"; then
+  if ! confirm_overwrite "$custom_jump"; then
     info_dialog "Installation cancelled."
     exit 0
   fi
 
-  install -m 0644 "$JUMP_SOURCE" "$target_path"
-  info_dialog "Copied jump loader to $(format_display_path "$target_path")."
+  install -m 0644 "$JUMP_SOURCE" "$custom_jump"
+  info_dialog "Copied jump loader to $(format_display_path "$custom_jump")."
 
-  # write cfg right beside jump.efi, but use the grub ESP device for rd.steamos.efi=
-  write_cfg_beside "$target_dir" "$grub_source"
+  write_cfg_to_custom_dir "$custom_dir" "$grub_source"
+  maybe_update_clover_config "$custom_dir"
 
-  # boot entry must point to the ESP we actually wrote to (steamcl one)
   partnum=$(derive_partnum "$steamcl_source" 2>/dev/null || true)
   disk=$(find_disk_for_part "$steamcl_source" || true)
 
@@ -465,9 +800,10 @@ install_jump_loader() {
     exit 1
   fi
 
-  rel_path=$(relative_loader_path "$steamcl_mount" "$target_dir")
-  rel_path=${rel_path#/}
-  windows_path="\\${rel_path//\//\\}"
+  windows_path="\\EFI\\deck-sb\\$TARGET_FILENAME"
+
+  # remove old entries with the same label before adding a new one
+  purge_existing_boot_entries "$EFI_LABEL"
 
   progress_dialog "Adding UEFI boot entry..."
   if ! output=$(efibootmgr -c -d "$disk" -p "$partnum" -l "$windows_path" -L "$EFI_LABEL" 2>&1); then
@@ -476,6 +812,17 @@ install_jump_loader() {
   fi
 
   info_dialog "Boot entry created:\n$output"
+
+  # --- new: best-effort persistence into real SteamOS root
+  local realroot
+  realroot=$(find_steamos_root 2>/dev/null || true)
+  if [ -n "$realroot" ]; then
+    if ! install_watchdog_into_root "$realroot"; then
+      info_dialog "EFI drop succeeded, but installing the SteamOS boot-fix service failed.\nYou can run the installer again from inside SteamOS to make it persistent."
+    fi
+  else
+    info_dialog "EFI drop succeeded, but a SteamOS root could not be auto-detected.\nYou can run a small service installer inside SteamOS to keep the entry."
+  fi
 }
 
 main() {
@@ -495,7 +842,6 @@ main() {
   collect_base_candidates
   select_base_candidate
 
-  # we need the steamcl mount to prefer a matching grub
   steamcl_mount_for_pick=$(findmnt -rno TARGET -T "$SELECTED_BASE" 2>/dev/null || true)
   select_grub_for_base "$steamcl_mount_for_pick"
 
@@ -513,6 +859,7 @@ declare -A SEEN_BASE=()
 declare -A SEEN_GRUB=()
 SELECTED_BASE=""
 SELECTED_GRUB=""
+STEAMOS_PREP_RW_MODE=""
 
 trap cleanup EXIT
 main

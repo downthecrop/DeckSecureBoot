@@ -1,0 +1,12 @@
+				<dict>
+					<key>Image</key>
+					<string>os_steamos</string>
+					<key>Path</key>
+					<string>\efi\deck-sb\jump.efi</string>
+					<key>Title</key>
+					<string>SteamOS Jump Loader</string>
+					<key>Type</key>
+					<string>Linux</string>
+					<key>FullTitle</key>
+					<string>SteamOS Jump Loader (SecureBoot)</string>
+				</dict>
