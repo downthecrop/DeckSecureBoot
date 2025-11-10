@@ -24,7 +24,7 @@ install_build_deps() {
     git python \
     autoconf automake pkgconf \
     gettext texinfo help2man \
-    flex bison libtool \
+    flex bison libtool patch \
     make gcc \
     sbsigntools
 }
@@ -159,7 +159,8 @@ echo "[*] building standalone GRUB EFI ..."
 "$GRUB_MK" \
   -O x86_64-efi \
   -o "$EFI_RAW" \
-  --modules="part_gpt part_msdos fat ext2 search search_fs_file normal efi_gop efi_uga regexp" \
+  --modules="part_gpt part_msdos fat ext2 search search_fs_file normal efi_gop efi_uga regexp gfxterm all_video" \
+  "boot/grub/unicode.pf2=$(pwd)/unicode.pf2" \
   "boot/grub/grub.cfg=${CFG_FILE}"
 
 echo "[*] signing EFI ..."

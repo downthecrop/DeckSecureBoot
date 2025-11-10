@@ -32,5 +32,6 @@ sbctl enroll-keys -m
 mkdir -p "$(dirname "$PENDING_FLAG")"
 echo pending > "$PENDING_FLAG"
 
-echo "Keys enrolled (ours + Microsoft). Reboot to apply."
-echo "Note: Sign your SteamOS EFI/kernel if you plan to switch between SteamOS and Windows with Secure Boot enabled."
+echo "Keys enrolled: Deck SB + Microsoft"
+echo "Next Step: Select 'Install Deck Jump Loader' form the menu to drop the signed deck-sb EFI and boot menus."
+echo "Reminder: Unsigned EFIs (including the offical SteamOS Bootloader and Clover) will NOT boot under Secure Boot until you sign them. Use the 'Signing Utility' from the menu to sign additional EFIs."

@@ -410,7 +410,7 @@ write_cfg_to_custom_dir() {
   local custom_dir="$1"
   local grub_dev="$2"
   local cfg_path="$custom_dir/deck-sb.cfg"
-  local kernel_block extra_menu_entries
+  local kernel_block
 
   progress_dialog "Writing SteamOS boot config..."
 
@@ -461,21 +461,13 @@ EOF
 )
   fi
 
-  extra_menu_entries=$(build_extra_menu_entries)
-
   {
     while IFS= read -r line || [ -n "$line" ]; do
-      case "$line" in
-        __DECK_SB_KERNEL_BLOCK__)
-          printf '%s\n' "$kernel_block"
-          ;;
-        __DECK_SB_EXTRA_MENU__)
-          [ -n "$extra_menu_entries" ] && printf '%s\n' "$extra_menu_entries"
-          ;;
-        *)
-          printf '%s\n' "$line"
-          ;;
-      esac
+      if [ "$line" = "__DECK_SB_KERNEL_BLOCK__" ]; then
+        printf '%s\n' "$kernel_block"
+      else
+        printf '%s\n' "$line"
+      fi
     done < "$DECK_SB_CFG_TEMPLATE"
   } > "$cfg_path" || {
     error_dialog "Failed to write $cfg_path"
@@ -483,71 +475,6 @@ EOF
   }
 
   chmod 0644 "$cfg_path" 2>/dev/null || true
-}
-
-build_extra_menu_entries() {
-  cat <<'EOF'
-
-# Automatically detect Windows and Clover bootloaders when present
-set deck_win_path=''
-if search --file /EFI/Microsoft/Boot/bootmgfw.efi --set=deck_win; then
-    set deck_win_path='/EFI/Microsoft/Boot/bootmgfw.efi'
-elif search --file /EFI/Microsoft/bootmgfw.efi --set=deck_win; then
-    set deck_win_path='/EFI/Microsoft/bootmgfw.efi'
-fi
-
-if test -n "$deck_win_path"; then
-    menuentry 'Windows Boot Manager' {
-        insmod part_gpt
-        insmod fat
-        insmod chain
-        search --no-floppy --file $deck_win_path --set=root
-        chainloader $deck_win_path
-    }
-fi
-
-set deck_clover_path=''
-if search --file /EFI/CLOVER/CLOVERX64.efi --set=deck_clover; then
-    set deck_clover_path='/EFI/CLOVER/CLOVERX64.efi'
-elif search --file /EFI/Clover/CLOVERX64.efi --set=deck_clover; then
-    set deck_clover_path='/EFI/Clover/CLOVERX64.efi'
-elif search --file /efi/clover/CLOVERX64.efi --set=deck_clover; then
-    set deck_clover_path='/efi/clover/CLOVERX64.efi'
-elif search --file /EFI/CLOVER/cloverx64.efi --set=deck_clover; then
-    set deck_clover_path='/EFI/CLOVER/cloverx64.efi'
-elif search --file /EFI/Clover/cloverx64.efi --set=deck_clover; then
-    set deck_clover_path='/EFI/Clover/cloverx64.efi'
-elif search --file /efi/clover/cloverx64.efi --set=deck_clover; then
-    set deck_clover_path='/efi/clover/cloverx64.efi'
-fi
-
-if test -n "$deck_clover_path"; then
-    menuentry 'Clover Bootloader' {
-        insmod part_gpt
-        insmod fat
-        insmod chain
-        search --no-floppy --file $deck_clover_path --set=root
-        chainloader $deck_clover_path
-    }
-fi
-
-set deck_steamcl_path=''
-if search --file /EFI/steamos/steamcl.efi --set=deck_steamcl; then
-    set deck_steamcl_path='/EFI/steamos/steamcl.efi'
-elif search --file /efi/steamos/steamcl.efi --set=deck_steamcl; then
-    set deck_steamcl_path='/efi/steamos/steamcl.efi'
-fi
-
-if test -n "$deck_steamcl_path"; then
-    menuentry 'SteamOS Official Bootloader' {
-        insmod part_gpt
-        insmod fat
-        insmod chain
-        search --no-floppy --file $deck_steamcl_path --set=root
-        chainloader $deck_steamcl_path
-    }
-fi
-EOF
 }
 
 maybe_update_clover_config() {
@@ -615,7 +542,37 @@ END {
 }
 ' "$config_path" > "$tmp_file"; then
     if mv "$tmp_file" "$config_path"; then
-      dialog --backtitle "$BACKTITLE" --msgbox "Clover config found at $(format_display_path "$config_path").\nA SteamOS Jump Loader entry was added to the top of its boot menu.\n\nReminder: re-sign Clover's EFI binaries with deck-sign-efi.sh so Secure Boot trusts them." 12 80
+      local clover_message="Clover config found at $(format_display_path \"$config_path\").\\nA SteamOS Jump Loader entry was added to the top of its boot menu."
+
+      if grep -q '<key>DefaultLoader</key>' "$config_path" 2>/dev/null; then
+        tmp_dloader=$(mktemp)
+        if awk '
+BEGIN { updated = 0 }
+{
+  line = $0
+  if (!updated && line ~ /<key>[\t ]*DefaultLoader[\t ]*<\/key>/) {
+    print line
+    if (getline nextline) {
+      gsub(/<string>.*<\/string>/, "<string>\\EFI\\deck-sb\\jump.efi</string>", nextline)
+      print nextline
+      updated = 1
+    }
+  } else {
+    print line
+  }
+}
+END { exit updated ? 0 : 1 }
+' "$config_path" > "$tmp_dloader"; then
+          if mv "$tmp_dloader" "$config_path"; then
+            clover_message+="\\nDefault Clover loader changed to \\EFI\\deck-sb\\jump.efi."
+          fi
+        else
+          rm -f "$tmp_dloader" 2>/dev/null || true
+        fi
+      fi
+
+      clover_message+="\\n\\nReminder: re-sign Clover's EFI binaries with deck-sign-efi.sh so Secure Boot trusts them."
+      dialog --backtitle "$BACKTITLE" --msgbox "$clover_message" 12 80
       return 0
     fi
   fi

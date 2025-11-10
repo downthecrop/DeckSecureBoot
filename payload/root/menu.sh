@@ -74,8 +74,8 @@ while true; do
       --menu "Select an action" 0 0 0 \
       1 "Check Boot Status${PEND}" \
       2 "Enable Secure Boot" \
-      3 "Signing Utility" \
-      4 "Install SteamOS jump loader" \
+      3 "Install SteamOS Jump Loader" \
+      4 "Signing Utility" \
       5 "Open root shell (requires USB keyboard)" \
       6 "--------------------------------" \
       7 "Reboot" \
@@ -87,8 +87,8 @@ while true; do
   case "$CHOICE" in
     1) check_boot_status ;;
     2) OUT=$(/root/deck-enroll.sh 2>&1 || true); dialog --msgbox "$OUT" 22 90 ;;
-    3) /root/deck-sign-efi.sh ;;
-    4) /root/deck-install-jump.sh ;;
+    3) /root/deck-install-jump.sh ;;
+    4) /root/deck-sign-efi.sh ;;
     5) open_shell ;;
     6) : ;;
     7) reboot ;;
