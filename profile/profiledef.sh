@@ -24,5 +24,6 @@ file_permissions=(
   ["/root/deck-enroll.sh"]="0:0:755"
   ["/root/deck-unenroll.sh"]="0:0:755"
   ["/root/deck-sign-efi.sh"]="0:0:755"
+  ["/root/deck-status.sh"]="0:0:755"
   ["/root/customize_airootfs.sh"]="0:0:755"
 )

@@ -8,19 +8,51 @@ This project builds an Arch-based live ISO for the Steam Deck (LCD and OLED) tha
 - lets you **sign** SteamOS or any other EFI loader so it still boots with Secure Boot ON
 - can itself be **re-signed** after the build so you can boot it even when the Deck is already secure-booted
 
+## Features
+
+- Enables Secure Boot end to end on the Deck without losing recovery paths
+- Keeps SteamOS fully launchable while Secure Boot stays enabled
+- Supports every Steam Deck hardware revision (LCD and OLED)
+- Compatible with Clover Bootloader workflows
+- Key safety baked in: you cannot lock yourself out of disabling Secure Boot if keys go missing
+- Presents a true, valid Secure Boot chain so Windows anti-cheat software treats the deck as compliant
+
 This is heavily inspired by / a practical follow-up to:
 👉 **https://github.com/ryanrudolfoba/SecureBootForSteamDeck**
 His work showed the steps. This repo just automates them into an ISO.
+
+## How to use it
+
+1. **Get the ISO** – grab the latest release artifact or build it yourself with `build.sh` (see “Building it yourself”).
+2. **Flash to USB** – use Balena Etcher (recommended) or any dd-like tool to write the image to a USB drive.
+3. **Boot the Deck** – plug the USB in, hold `Vol-` + `Power`, and pick the USB device from the boot selector.
+4. **Run the menu** – the ISO boots straight into the ncurses menu where you can enroll keys, sign loaders, rerun the EFI installer, or disable Secure Boot later.
+
+## How this works
+
+The Deck never shows a “turn on Secure Boot” toggle inside its UEFI UI, but Valve ships it in **setup mode**. Setup mode means the firmware happily accepts new Platform Keys (PK), Key Exchange Keys (KEK), and db signatures without user prompts. When you pick the enrollment option in our menu, we drop the baked keys (plus Microsoft’s) into the firmware variables. As soon as the PK lands, the firmware automatically flips Secure Boot to **enabled**. Later, if you use the disable/unenroll option, we clear those vars; once the PK is gone the Deck re-enters setup mode and Secure Boot is **automatically disabled** again. No hidden switches involved—just key presence or absence.
+
+## Helpful information & FAQ
+
+- **Clover note:** Clover removes the Deck SB Jump loader entry from the Deck’s Boot Manager (`Vol-` + `Power`). Use `Vol+` + `Power`, pick **Boot From File**, then load `/efi/deck-sb/jump.efi` to chainload it manually.
+- **Signing other OSes:** Any EFI loader or kernel you want to boot with Secure Boot enabled must be signed. Use the Signing Utility to add signatures for every distro you keep on the internal drive.
+- **GRUB Secure Boot policy warnings:** Some distros ship GRUB with `grubshim`, which complains under Secure Boot because it expects Microsoft’s shim chain. That’s why we rely on our custom jump loader instead.
+
+**Does this modify SteamOS?**  We drop a tiny systemd service whose only job is to ensure the Deck SB bootloader entry gets re-added if SteamOS updates wipe it. The OS rootfs, kernel, and userspace remain untouched.
+
+**Will updates still work under Secure Boot?**  Yes. SteamOS keeps its original GRUB entry and kernel images in the EFI partition. The Deck SB entry simply reuses those signed assets, so system updates keep flowing normally.
+
+**SteamOS stopped booting under Secure Boot!**  A recent SteamOS update probably bumped the kernel or initrd filenames. Re-run the EFI installer option from the menu; it re-parses the official SteamOS GRUB config and refreshes the arguments so the Deck SB loader tracks the new assets automatically.
 
 ---
 
 ## Repo layout
 
-The project is no longer “just two scripts”. Instead we keep the moving pieces in their own directories so the build remains reproducible and reviewable:
+Each moving part lives in its own directory so builds stay reproducible and easy to audit:
 
 - `build.sh` – single entry point that prepares an Archiso workdir, copies our profile, injects payload + keys, and (optionally) calls the resigner when it sits next to the builder.
 - `profile/` – trimmed Archiso baseline overrides (mainly `profiledef.sh`, EFI bits, pacman.conf). This folder mirrors what ends up under `/usr/share/archiso/configs/...`.
-- `payload/` – everything that lands inside the live image. `payload/root/menu.sh` drives the ncurses UI, the `deck-*.sh` helpers enroll/unenroll/sign, and `payload/etc/systemd/system/deck-startup.service` makes the menu boot instantly.
+- `payload/` – everything that lands inside the live image. `payload/root/menu.sh` drives the ncurses UI, the `deck-*.sh` helpers enroll/unenroll/sign, and `payload/etc/systemd/system/deck-startup.service` re-adds the Deck SB boot entry if updates wipe it.
 - `keys/` – the baked Secure Boot keys (`PK.pem`/`PK.key`). `build.sh` mirrors them to `/usr/share/deck-sb/keys` and `/var/lib/sbctl/` during the image build.
 - `resigner.sh` – optional post-build helper that re-signs the hidden ISO EFI image so the ISO still boots after the Deck trusts these keys.
 
@@ -162,6 +194,8 @@ The main builder will auto-run this if `resigner.sh` sits next to it. If not, it
 
 You can also point the resigner at other similar ISOs to make them bootable under these keys.
 
+> **Heads-up:** `resigner.sh` rewrites the El Torito image in-place based on its original offset. On rare ISOs that pack data right after the EFI blob, this can corrupt the file. If that happens, pad the ISO with a little dummy data (e.g., `truncate -s +1M your.iso`) and rerun the resigner so the EFI image has breathing room.
+
 ---
 
 ## Building it yourself
@@ -170,7 +204,36 @@ You can also point the resigner at other similar ISOs to make them bootable unde
 2. Install `archiso`, `grub`, `sbctl`, `sbsigntools` (the script auto-installs them if you run it as root on Arch).
 3. Run `sudo ./build.sh` from the repo root. It stages the profile, payload, and keys automatically and drops finished ISOs in `./out/` (or `/out` if that directory exists).
 
-The builder drops ISOs in `/out` when that directory exists (handy inside containers) or `./out/` otherwise. When `resigner.sh` is detected next to `build.sh`, the newly built ISO gets re-signed automatically and you’ll see both `*.iso` and `*-signed.iso` outputs.
+The builder writes ISOs to `/out` when that directory exists (handy inside containers) or `./out/` otherwise. When `resigner.sh` sits next to `build.sh`, the ISO is automatically re-signed and you’ll get both `*.iso` and `*-signed.iso` outputs.
+
+## Building from source (quickstart)
+
+```bash
+git clone https://github.com/downthecrop/DeckSecureBoot.git
+cd DeckSecureBoot
+
+# optional: prep an output directory the container can write to
+mkdir -p ./iso-out
+
+# launch an Arch Linux build shell
+docker run --rm -it \
+  --platform=linux/amd64 \
+  --privileged \
+  -v $(pwd):/work \
+  -v $(pwd)/iso-out:/out \
+  archlinux:latest \
+  /bin/bash
+```
+
+Inside the container:
+
+```bash
+cd /work
+pacman -Syu --needed archiso grub sbctl sbsigntools
+sudo ./build.sh   # finished artifacts land in /out → ./iso-out on the host
+```
+
+Need to regenerate the signed Deck jump loader? Run `./makeefi.sh` (or `./makeefi`) and drop the refreshed `steamos-jump.signed.efi` back into `payload/root/deck-sb-files/` before rebuilding.
 
 ---
 

@@ -8,6 +8,20 @@ KEYDIR="${DECK_SB_KEYDIR}"
 PENDING_FLAG="${DECK_SB_PENDING_FLAG}"
 FIXED_GUID="decdecde-dec0-4dec-adec-decdecdecdec"
 
+clean_sbctl_output() {
+  printf '%s' "$1" | sanitize_printable | perl -pe 's/microsoft/Microsoft/ig'
+}
+
+exit_if_not_setup_mode() {
+  if secure_boot_enabled; then
+    echo "System Not in Setup Mode: Secure Boot is already enabled."
+    echo "Use 'Disable Secure Boot' first if you need to reinstall or replace keys."
+    exit 0
+  fi
+}
+
+exit_if_not_setup_mode
+
 for f in PK.key PK.pem KEK.key KEK.pem db.key db.pem; do
   [ -f "$KEYDIR/$f" ] || { echo "missing $KEYDIR/$f"; exit 1; }
 done
@@ -27,11 +41,16 @@ cp "$KEYDIR/db.pem"  /var/lib/sbctl/keys/db/db.pem
 
 chattr -i /sys/firmware/efi/efivars/{PK,KEK,db}* 2>/dev/null || true
 
-sbctl enroll-keys -m
+if ! ENROLL_RAW=$(sbctl enroll-keys -m 2>&1); then
+  clean_sbctl_output "$ENROLL_RAW"
+  exit 1
+fi
+
+clean_sbctl_output "$ENROLL_RAW"
 
 mkdir -p "$(dirname "$PENDING_FLAG")"
 echo pending > "$PENDING_FLAG"
 
 echo "Keys enrolled: Deck SB + Microsoft"
-echo "Next Step: Select 'Install Deck Jump Loader' form the menu to drop the signed deck-sb EFI and boot menus."
-echo "Reminder: Unsigned EFIs (including the offical SteamOS Bootloader and Clover) will NOT boot under Secure Boot until you sign them. Use the 'Signing Utility' from the menu to sign additional EFIs."
+echo "Next Step: Select 'Install Deck Jump Loader' from the menu to install the signed deck-sb EFI and boot menu entries."
+echo "Reminder: Unsigned EFIs (including the official SteamOS Bootloader and Clover) will NOT boot under Secure Boot until you sign them. Use the 'Signing Utility' from the menu to sign additional EFIs."

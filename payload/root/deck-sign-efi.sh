@@ -6,6 +6,10 @@ set -e
 
 BACKTITLE="${DECK_SB_BACKTITLE}"
 
+deck_dialog() {
+  dialog --backtitle "$BACKTITLE" "$@"
+}
+
 if [ "$(id -u)" -ne 0 ]; then
   echo "This needs to run as root (sbctl writes under /var/lib/sbctl)."
   exit 1
@@ -86,7 +90,7 @@ done
 
 progress_msg() {
   local msg="$1"
-  dialog --infobox "$msg" 5 70
+  deck_dialog --infobox "$msg" 5 70
 }
 
 progress_msg "Scanning disks for EFI files and kernels..."
@@ -177,7 +181,7 @@ for dir in "${SEARCH_DIRS[@]}"; do
     add_candidate "$f"
   done < <(run_find "$dir" || true)
 done
-dialog --clear
+deck_dialog --clear
 
 ALL=("${ALL[@]}")
 
@@ -223,13 +227,13 @@ show_dialog_msg() {
 
   local msg
   printf -v msg '%s\n\n%s' "$heading" "$body"
-  dialog --msgbox "$msg" "$height" "$width"
+  deck_dialog --msgbox "$msg" "$height" "$width"
 }
 
 sign_clover_bundle() {
   local files=("$@")
   if [ "${#files[@]}" -eq 0 ]; then
-    dialog --msgbox "No Clover EFI files were detected." 8 60
+    deck_dialog --msgbox "No Clover EFI files were detected." 8 60
     return 0
   fi
 
@@ -237,7 +241,7 @@ sign_clover_bundle() {
   for file in "${files[@]}"; do
     display=$(format_display_path "$file")
     if ! ERR=$(ensure_rw "$file"); then
-      dialog --msgbox "${ERR:-Unable to access $display.}" 9 70
+      deck_dialog --msgbox "${ERR:-Unable to access $display.}" 9 70
       return 1
     fi
   done
@@ -246,7 +250,7 @@ sign_clover_bundle() {
   local success=0 already=0 failed=0
   for file in "${files[@]}"; do
     display=$(format_display_path "$file")
-    dialog --infobox "Signing Clover EFI:\n$display" 6 70
+    deck_dialog --infobox "Signing Clover EFI:\n$display" 6 70
     RAW_OUTPUT=$(sbctl sign -s "$file" 2>&1)
     STATUS=$?
     OUTPUT=$(printf '%s' "$RAW_OUTPUT" | sanitize_dialog_text)
@@ -317,7 +321,7 @@ if [ "${#ALL[@]}" -eq 0 ]; then
     checked_dirs="(no candidate directories)"
   fi
 
-  dialog --msgbox "No EFI files were found.\nChecked: ${checked_dirs}.\nMount your target ESP and try again." 11 74
+  deck_dialog --msgbox "No EFI files were found.\nChecked: ${checked_dirs}.\nMount your target ESP and try again." 11 74
   exit 1
 fi
 
@@ -365,11 +369,11 @@ while true; do
   done
 
   if [ "${#PICK_TARGETS[@]}" -eq 0 ]; then
-    dialog --msgbox "No signable files were found." 8 60
+    deck_dialog --msgbox "No signable files were found." 8 60
     break
   fi
 
-  CHOICE=$(dialog --clear --stdout --cancel-label "Back" --menu "Select EFI / kernel to sign" 0 0 0 "${MENU[@]}") || break
+  CHOICE=$(deck_dialog --clear --stdout --cancel-label "Back" --menu "Select EFI / kernel to sign" 0 0 0 "${MENU[@]}") || break
   TARGET_KEY="${PICK_TARGETS[$((CHOICE-1))]}"
 
   if [ "$TARGET_KEY" = "$CLOVER_BUNDLE_KEY" ]; then
@@ -380,16 +384,16 @@ while true; do
   TARGET="$TARGET_KEY"
 
   if ! ERR=$(ensure_rw "$TARGET"); then
-    dialog --msgbox "${ERR:-Unable to access target.}" 8 70
+    deck_dialog --msgbox "${ERR:-Unable to access target.}" 8 70
     continue
   fi
 
   lower_target=${TARGET,,}
   if [[ "$lower_target" == *microsoft* || "$lower_target" == *bootmgfw.efi* ]]; then
-    dialog --yesno "This looks like a Windows EFI loader.\nResigning this EFI is not recommended.\nContinue anyway?" 12 60 || continue
+    deck_dialog --yesno "This looks like a Windows EFI loader.\nRe-signing this EFI is not recommended.\nContinue anyway?" 12 60 || continue
   fi
 
-  dialog --infobox "Signing:\n$TARGET" 6 70
+  deck_dialog --infobox "Signing:\n$TARGET" 6 70
   RAW_OUTPUT=$(sbctl sign -s "$TARGET" 2>&1)
   STATUS=$?
   OUTPUT=$(printf '%s' "$RAW_OUTPUT" | sanitize_dialog_text)

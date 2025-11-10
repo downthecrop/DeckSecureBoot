@@ -14,6 +14,10 @@ WATCHDOG_SCRIPT_TEMPLATE="$DECK_SB_FILES_DIR/deck-sb-bootfix.sh"
 WATCHDOG_SERVICE_TEMPLATE="$DECK_SB_FILES_DIR/deck-sb-bootfix.service"
 CLOVER_ENTRY_TEMPLATE="$DECK_SB_FILES_DIR/clover-jump-entry.plist"
 DECK_SB_CFG_TEMPLATE="$DECK_SB_FILES_DIR/deck-sb.cfg.tmpl"
+DEFAULT_KERNEL_IMAGE="/boot/vmlinuz-linux-neptune-611"
+DEFAULT_INITRD_IMAGES="/boot/amd-ucode.img /boot/initramfs-linux-neptune-611.img"
+STEAMOS_KERNEL_IMAGE="$DEFAULT_KERNEL_IMAGE"
+STEAMOS_INITRD_IMAGES="$DEFAULT_INITRD_IMAGES"
 
 FIND_TIMEOUT=${FIND_TIMEOUT:-15}
 TIMEOUT_BIN=$(command -v timeout || true)
@@ -42,7 +46,7 @@ mkdir -p "$TMP_EFI_MOUNT_BASE" "$TMP_LINUX_MOUNT_BASE" "$STEAMOS_ROOT_BASE"
 
 require_bins() {
   local missing=()
-  for bin in dialog lsblk mount findmnt efibootmgr install find blkid; do
+  for bin in dialog lsblk mount findmnt efibootmgr install find blkid awk; do
     if ! command -v "$bin" >/dev/null 2>&1; then
       missing+=("$bin")
     fi
@@ -62,7 +66,10 @@ info_dialog() {
 }
 
 progress_dialog() {
-  dialog --backtitle "$BACKTITLE" --infobox "$1" 5 70
+  local msg="$1"
+  local height="${2:-5}"
+  local width="${3:-70}"
+  dialog --backtitle "$BACKTITLE" --infobox "$msg" "$height" "$width"
 }
 
 cleanup() {
@@ -121,6 +128,98 @@ clean_source_path() {
     *'['*) src="${src%%[*}" ;;
   esac
   echo "$src"
+}
+
+trim_config_value() {
+  local val="$1"
+  printf '%s\n' "$val" | awk '{sub(/[ \t]*\\$/, ""); sub(/^[ \t]+/, ""); sub(/[ \t]+$/, ""); print}'
+}
+
+find_grub_cfg_for_paths() {
+  local attempt path dir candidate
+  for attempt in "$1" "$2"; do
+    path="$attempt"
+    [ -n "$path" ] || continue
+    dir=$(dirname "$path" 2>/dev/null || true)
+    [ -n "$dir" ] || continue
+    candidate="$dir/grub.cfg"
+    if [ -f "$candidate" ]; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+    candidate=$(find "$dir" -maxdepth 2 -path '*/steamos/grub.cfg' -print -quit 2>/dev/null || true)
+    if [ -n "$candidate" ]; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done
+  return 1
+}
+
+parse_kernel_initrd_from_cfg() {
+  local cfg="$1"
+  [ -f "$cfg" ] || return 1
+
+  local kernel_image initrd_images updated=0
+
+  kernel_image=$(awk '
+    {
+      cmd = tolower($1)
+      if (cmd == "linux" || cmd == "linuxefi") {
+        print $2
+        exit
+      }
+    }
+  ' "$cfg" 2>/dev/null || true)
+  kernel_image=$(trim_config_value "$kernel_image")
+  if [ -n "$kernel_image" ]; then
+    STEAMOS_KERNEL_IMAGE="$kernel_image"
+    updated=1
+  fi
+
+  initrd_images=$(awk '
+    {
+      cmd = tolower($1)
+      if (cmd == "initrd" || cmd == "initrdefi") {
+        $1 = ""
+        sub(/^[\t ]+/, "")
+        print
+        exit
+      }
+    }
+  ' "$cfg" 2>/dev/null || true)
+  initrd_images=$(trim_config_value "$initrd_images")
+  if [ -n "$initrd_images" ]; then
+    STEAMOS_INITRD_IMAGES="$initrd_images"
+    updated=1
+  fi
+
+  [ "$updated" -eq 1 ] || return 1
+  return 0
+}
+
+update_kernel_initrd_from_grub() {
+  local grub_path="$1"
+  local steamcl_path="$2"
+  local cfg
+
+  cfg=$(find_grub_cfg_for_paths "$grub_path" "$steamcl_path" 2>/dev/null || true)
+  if [ -z "$cfg" ]; then
+    STEAMOS_KERNEL_IMAGE="$DEFAULT_KERNEL_IMAGE"
+    STEAMOS_INITRD_IMAGES="$DEFAULT_INITRD_IMAGES"
+    info_dialog "SteamOS grub.cfg not found near the selected loader (e.g. steamos/grubx64.efi). Using default kernel/initrd paths." 10 80
+    return 1
+  fi
+
+  if parse_kernel_initrd_from_cfg "$cfg"; then
+    info_dialog "Kernel/initrd paths captured from $(format_display_path "$cfg")." 8 80
+    return 0
+  fi
+
+  STEAMOS_KERNEL_IMAGE="$DEFAULT_KERNEL_IMAGE"
+  STEAMOS_INITRD_IMAGES="$DEFAULT_INITRD_IMAGES"
+  info_dialog "Could not parse kernel/initrd data from $(format_display_path "$cfg"); using default kernel/initrd paths." 10 80
+  return 1
 }
 
 add_search_dir() {
@@ -376,10 +475,8 @@ locate_steamos_root_within() {
 prepare_steamos_root_for_write() {
   local rootmp="$1"
   local fstype
-  STEAMOS_PREP_RW_MODE=""
 
   if ensure_rw_mount "$rootmp"; then
-    STEAMOS_PREP_RW_MODE="already-rw"
     return 0
   fi
 
@@ -389,7 +486,6 @@ prepare_steamos_root_for_write() {
     if btrfs property get -ts "$rootmp" ro >/dev/null 2>&1; then
       btrfs property set -ts "$rootmp" ro false >/dev/null 2>&1 || true
       if ensure_rw_mount "$rootmp"; then
-        STEAMOS_PREP_RW_MODE="btrfs-property"
         return 0
       fi
     fi
@@ -398,7 +494,6 @@ prepare_steamos_root_for_write() {
   if [ -x "$rootmp/usr/bin/steamos-readonly" ]; then
     chroot "$rootmp" /usr/bin/steamos-readonly disable 2>/dev/null || true
     if ensure_rw_mount "$rootmp"; then
-      STEAMOS_PREP_RW_MODE="steamos-readonly"
       return 0
     fi
   fi
@@ -441,7 +536,7 @@ write_cfg_to_custom_dir() {
   if [ -n "$root_uuid" ]; then
     kernel_block=$(cat <<EOF
     search --no-floppy --fs-uuid --set=root $root_uuid
-    linux /boot/vmlinuz-linux-neptune-611 \
+    linux ${STEAMOS_KERNEL_IMAGE} \
         console=tty1 \
         rd.luks=0 rd.lvm=0 rd.md=0 rd.dm=0 \
         rd.systemd.gpt_auto=0 \
@@ -449,14 +544,14 @@ write_cfg_to_custom_dir() {
         loglevel=3 \
         plymouth.ignore-serial-consoles \
         fbcon=rotate:1
-    initrd /boot/amd-ucode.img /boot/initramfs-linux-neptune-611.img
+    initrd ${STEAMOS_INITRD_IMAGES}
 EOF
 )
   else
     kernel_block=$(cat <<EOF
-    linux /boot/vmlinuz-linux-neptune-611 rd.steamos.efi=$grub_dev \
+    linux ${STEAMOS_KERNEL_IMAGE} rd.steamos.efi=$grub_dev \
         fbcon=rotate:1
-    initrd /boot/amd-ucode.img /boot/initramfs-linux-neptune-611.img
+    initrd ${STEAMOS_INITRD_IMAGES}
 EOF
 )
   fi
@@ -501,7 +596,7 @@ maybe_update_clover_config() {
   config_path="$clover_dir/config.plist"
 
   if [ ! -f "$CLOVER_ENTRY_TEMPLATE" ]; then
-    info_dialog "Clover directory detected at $(format_display_path "$clover_dir"), but the entry template is missing."
+    error_dialog "Clover directory detected at $(format_display_path "$clover_dir"), but the entry template is missing."
     return 0
   fi
 
@@ -512,7 +607,7 @@ maybe_update_clover_config() {
   progress_dialog "Adding SteamOS Jump Loader to Clover config..."
   local tmp_file
   tmp_file=$(mktemp) || {
-    info_dialog "Failed to create temporary file while editing $(format_display_path "$config_path")."
+    error_dialog "Failed to create temporary file while editing $(format_display_path "$config_path")."
     return 1
   }
 
@@ -572,13 +667,13 @@ END { exit updated ? 0 : 1 }
       fi
 
       clover_message+="\\n\\nReminder: re-sign Clover's EFI binaries with deck-sign-efi.sh so Secure Boot trusts them."
-      dialog --backtitle "$BACKTITLE" --msgbox "$clover_message" 12 80
+      progress_dialog "$clover_message" 12 80
       return 0
     fi
   fi
 
   rm -f "$tmp_file" 2>/dev/null || true
-  info_dialog "Failed to update Clover config at $(format_display_path "$config_path"). Add the SteamOS Jump Loader entry manually."
+  error_dialog "Failed to update Clover config at $(format_display_path "$config_path"). Add the SteamOS Jump Loader entry manually."
   return 1
 }
 
@@ -663,18 +758,6 @@ install_watchdog_into_root() {
     return 1
   fi
 
-  case "$STEAMOS_PREP_RW_MODE" in
-    btrfs-property)
-      info_dialog "SteamOS root was read-only. Toggled the Btrfs subvolume property before writing inside $pretty_root."
-      ;;
-    steamos-readonly)
-      info_dialog "SteamOS root was read-only. Chrooted to run steamos-readonly disable so files can be written."
-      ;;
-    already-rw)
-      info_dialog "SteamOS root is already writable; proceeding with watchdog install."
-      ;;
-  esac
-
   mkdir -p "$service_dir" 2>/dev/null || return 1
 
   if [ ! -f "$WATCHDOG_SCRIPT_TEMPLATE" ] || [ ! -f "$WATCHDOG_SERVICE_TEMPLATE" ]; then
@@ -729,6 +812,8 @@ install_jump_loader() {
     grub_source="$steamcl_source"
   fi
 
+  update_kernel_initrd_from_grub "$grub_path" "$steamcl_path"
+
   if ! ensure_rw_mount "$steamcl_mount"; then
     error_dialog "Unable to remount $steamcl_mount writable. Remount it manually and retry."
     exit 1
@@ -739,8 +824,8 @@ install_jump_loader() {
   custom_jump="$custom_dir/$TARGET_FILENAME"
 
   if ! confirm_overwrite "$custom_jump"; then
-    info_dialog "Installation cancelled."
-    exit 0
+    progress_dialog "Installation cancelled." 6 60
+    return 0
   fi
 
   install -m 0644 "$JUMP_SOURCE" "$custom_jump"
@@ -775,10 +860,10 @@ install_jump_loader() {
   realroot=$(find_steamos_root 2>/dev/null || true)
   if [ -n "$realroot" ]; then
     if ! install_watchdog_into_root "$realroot"; then
-      info_dialog "EFI drop succeeded, but installing the SteamOS boot-fix service failed.\nYou can run the installer again from inside SteamOS to make it persistent."
+      error_dialog "EFI drop succeeded, but installing the SteamOS boot-fix service failed.\nYou can run the installer again from inside SteamOS to make it persistent."
     fi
   else
-    info_dialog "EFI drop succeeded, but a SteamOS root could not be auto-detected.\nYou can run a small service installer inside SteamOS to keep the entry."
+    error_dialog "EFI drop succeeded, but a SteamOS root could not be auto-detected.\nYou can run a small service installer inside SteamOS to keep the entry."
   fi
 }
 
@@ -803,8 +888,6 @@ main() {
   select_grub_for_base "$steamcl_mount_for_pick"
 
   install_jump_loader "$SELECTED_BASE" "$SELECTED_GRUB"
-
-  info_dialog "SteamOS custom jump loader installed successfully."
 }
 
 declare -a TEMP_MOUNTS=()
@@ -816,7 +899,6 @@ declare -A SEEN_BASE=()
 declare -A SEEN_GRUB=()
 SELECTED_BASE=""
 SELECTED_GRUB=""
-STEAMOS_PREP_RW_MODE=""
 
 trap cleanup EXIT
 main
