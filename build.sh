@@ -80,6 +80,7 @@ done
 # ---------------------------------------------------------------------------
 ensure_pkg() {
   local pkg="$1"
+  pacman -Sy
   if ! pacman -Qi "$pkg" >/dev/null 2>&1; then
     pacman -Sy --noconfirm "$pkg"
   fi

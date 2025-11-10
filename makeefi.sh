@@ -20,6 +20,7 @@ GRUB_PREFIX="${BUILD_ROOT}/out"
 GRUB_MK="${GRUB_PREFIX}/bin/grub-mkstandalone"
 
 install_build_deps() {
+  pacman -Sy
   pacman -S --needed --noconfirm \
     git python \
     autoconf automake pkgconf \
