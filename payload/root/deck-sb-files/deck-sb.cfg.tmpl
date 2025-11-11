@@ -47,6 +47,48 @@ menuentry 'SteamOS SB (shimless)' {
 __DECK_SB_KERNEL_BLOCK__
 }
 
+set deck_iso_file='/usr/local/share/deck-sb/arch/boot/x86_64/vmlinuz-linux'
+set deck_iso_uuid=''
+set deck_iso_devpath=''
+if search --file $deck_iso_file --set=deck_iso_probe; then
+    menuentry 'Deck Secure Boot Tools (On Disk)' {
+        set gfxpayload=text
+        terminal_output console
+        insmod part_gpt
+        insmod btrfs
+        insmod gzio
+        insmod probe
+        search --no-floppy --file $deck_iso_file --set=deck_iso
+        if [ -z "$deck_iso" ]; then
+            echo 'Unable to locate Deck SB files on disk.'
+            sleep 3
+        else
+            set root=$deck_iso
+            probe --set=deck_iso_uuid --fs-uuid ($deck_iso)
+            if [ -n "$deck_iso_uuid" ]; then
+                set deck_iso_devpath="/dev/disk/by-uuid/$deck_iso_uuid"
+            fi
+        fi
+        if [ -n "$deck_iso_uuid" ]; then
+            echo 'Deck SB on-disk debug:'
+            echo "  device: $deck_iso"
+            echo "  uuid:   $deck_iso_uuid"
+            echo "  kernel: ($deck_iso)/usr/local/share/deck-sb/arch/boot/x86_64/vmlinuz-linux"
+            echo "  initrd: ($deck_iso)/usr/local/share/deck-sb/arch/boot/x86_64/initramfs-linux.img"
+            echo "  archisobasedir=usr/local/share/deck-sb/arch"
+            echo "  archisodevice=$deck_iso_devpath"
+            echo "  img_dev=$deck_iso_devpath"
+            echo "  img_loop=/usr/local/share/deck-sb/arch/x86_64/airootfs.sfs"
+            sleep 3
+            linux ($deck_iso)/usr/local/share/deck-sb/arch/boot/x86_64/vmlinuz-linux archisobasedir=usr/local/share/deck-sb/arch archisodevice=$deck_iso_devpath img_dev=$deck_iso_devpath img_loop=/usr/local/share/deck-sb/arch/x86_64/airootfs.sfs copytoram=n
+            initrd ($deck_iso)/usr/local/share/deck-sb/arch/boot/x86_64/initramfs-linux.img
+        else
+            echo 'Unable to determine filesystem UUID for deck-sb files.'
+            sleep 3
+        fi
+    }
+fi
+
 # Automatically detect Windows, Clover, and the stock SteamOS loader when present
 set deck_win_path=''
 if search --file /EFI/Microsoft/Boot/bootmgfw.efi --set=deck_win; then

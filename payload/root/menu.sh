@@ -32,12 +32,13 @@ while true; do
       1 "Check Boot Status${PEND}" \
       2 "Enable Secure Boot" \
       3 "Install SteamOS Jump Loader" \
-      4 "Signing Utility" \
-      5 "Open root shell (requires USB keyboard)" \
+      4 "Install Deck SB ISO to disk *Optional* (~400MB)" \
+      5 "Signing Utility" \
       6 "--------------------------------" \
       7 "Reboot" \
       8 "Poweroff" \
-      9 "Disable Secure Boot"); then
+      9 "Open root shell (requires USB keyboard)" \
+      10 "Disable Secure Boot"); then
     continue
   fi
 
@@ -45,11 +46,12 @@ while true; do
     1) /root/deck-status.sh ;;
     2) OUT=$(/root/deck-enroll.sh 2>&1 || true); dialog --backtitle "$BACKTITLE" --msgbox "$OUT" 22 90 ;;
     3) /root/deck-install-jump.sh ;;
-    4) /root/deck-sign-efi.sh ;;
-    5) open_shell ;;
+    4) /root/deck-install-iso.sh ;;
+    5) /root/deck-sign-efi.sh ;;
     6) : ;;
     7) reboot ;;
     8) poweroff ;;
-    9) OUT=$(/root/deck-unenroll.sh 2>&1 || true); dialog --backtitle "$BACKTITLE" --msgbox "$OUT" 22 90 ;;
+    9) open_shell ;;
+    10) OUT=$(/root/deck-unenroll.sh 2>&1 || true); dialog --backtitle "$BACKTITLE" --msgbox "$OUT" 22 90 ;;
   esac
 done

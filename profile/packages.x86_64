@@ -1,0 +1,47 @@
+# Core runtime
+archiso
+bash
+coreutils
+diffutils
+filesystem
+findutils
+gawk
+grep
+pacman
+procps-ng
+psmisc
+sed
+shadow
+systemd
+systemd-sysvcompat
+tar
+tzdata
+util-linux
+which
+
+# Compression
+gzip
+xz
+
+# Filesystems & storage
+btrfs-progs
+dosfstools
+e2fsprogs
+f2fs-tools
+ntfs-3g
+xfsprogs
+
+# UI / dialog
+dialog
+ncurses
+
+# Secure boot / EFI
+efibootmgr
+efitools
+mkinitcpio
+openssl
+sbctl
+sbsigntools
+
+# Kernel
+linux
