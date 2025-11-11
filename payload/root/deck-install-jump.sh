@@ -62,7 +62,7 @@ error_dialog() {
 }
 
 info_dialog() {
-  dialog --backtitle "$BACKTITLE" --msgbox "$1" 8 80
+  dialog --clear --backtitle "$BACKTITLE" --msgbox "$1" 8 80
 }
 
 progress_dialog() {
@@ -207,18 +207,18 @@ update_kernel_initrd_from_grub() {
   if [ -z "$cfg" ]; then
     STEAMOS_KERNEL_IMAGE="$DEFAULT_KERNEL_IMAGE"
     STEAMOS_INITRD_IMAGES="$DEFAULT_INITRD_IMAGES"
-    info_dialog "SteamOS grub.cfg not found near the selected loader (e.g. steamos/grubx64.efi). Using default kernel/initrd paths." 10 80
+    error_dialog "SteamOS grub.cfg was not found near the selected loader (e.g. steamos/grubx64.efi).\nUsing default kernel/initrd paths instead."
     return 1
   fi
 
   if parse_kernel_initrd_from_cfg "$cfg"; then
-    info_dialog "Kernel/initrd paths captured from $(format_display_path "$cfg")." 8 80
+    info_dialog "Kernel/initrd paths captured from $(format_display_path "$cfg")."
     return 0
   fi
 
   STEAMOS_KERNEL_IMAGE="$DEFAULT_KERNEL_IMAGE"
   STEAMOS_INITRD_IMAGES="$DEFAULT_INITRD_IMAGES"
-  info_dialog "Could not parse kernel/initrd data from $(format_display_path "$cfg"); using default kernel/initrd paths." 10 80
+  error_dialog "Could not parse kernel/initrd data from $(format_display_path "$cfg").\nUsing default kernel/initrd paths instead."
   return 1
 }
 

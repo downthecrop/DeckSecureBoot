@@ -41,12 +41,33 @@ else
 fi
 
 if [ -f "$PENDING_FLAG" ]; then
-  if [ "$SBCTL_PRESENT" -eq 1 ] && [ "$SBCTL_ENABLED" -eq 1 ]; then
-    MSG+="\nSecure Boot change appears active now.\n"
-    rm -f "$PENDING_FLAG"
-  else
-    MSG+="\nYou have changed SecureBoot State, a reboot is required to apply your changes.\n"
-  fi
+  PENDING_STATE=$(cat "$PENDING_FLAG" 2>/dev/null | tr -d '\r\n')
+  case "$PENDING_STATE" in
+    enable)
+      if [ "$SBCTL_PRESENT" -eq 1 ] && [ "$SBCTL_ENABLED" -eq 1 ]; then
+        MSG+="\nSecure Boot enable change appears active now.\n"
+        rm -f "$PENDING_FLAG"
+      else
+        MSG+="\nSecure Boot enable is pending; reboot is required to apply your changes.\n"
+      fi
+      ;;
+    disable)
+      if [ "$SBCTL_PRESENT" -eq 1 ] && [ "$SBCTL_ENABLED" -eq 0 ]; then
+        MSG+="\nSecure Boot disable change appears active now.\n"
+        rm -f "$PENDING_FLAG"
+      else
+        MSG+="\nSecure Boot disable is pending; reboot is required to apply your changes.\n"
+      fi
+      ;;
+    *)
+      if [ "$SBCTL_PRESENT" -eq 1 ] && [ "$SBCTL_ENABLED" -eq 1 ]; then
+        MSG+="\nSecure Boot change appears active now.\n"
+        rm -f "$PENDING_FLAG"
+      else
+        MSG+="\nYou have changed SecureBoot State, a reboot is required to apply your changes.\n"
+      fi
+      ;;
+  esac
 fi
 
 dialog --backtitle "$BACKTITLE" --msgbox "$MSG" 22 90

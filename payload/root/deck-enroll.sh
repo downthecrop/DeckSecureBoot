@@ -9,7 +9,9 @@ PENDING_FLAG="${DECK_SB_PENDING_FLAG}"
 FIXED_GUID="decdecde-dec0-4dec-adec-decdecdecdec"
 
 clean_sbctl_output() {
-  printf '%s' "$1" | sanitize_printable | perl -pe 's/microsoft/Microsoft/ig'
+  local cleaned
+  cleaned=$(printf '%s' "$1" | sanitize_printable)
+  printf '%s\n' "$cleaned" | sed -E 's/microsoft/Microsoft/Ig'
 }
 
 exit_if_not_setup_mode() {
@@ -49,7 +51,7 @@ fi
 clean_sbctl_output "$ENROLL_RAW"
 
 mkdir -p "$(dirname "$PENDING_FLAG")"
-echo pending > "$PENDING_FLAG"
+echo enable > "$PENDING_FLAG"
 
 echo "Keys enrolled: Deck SB + Microsoft"
 echo "Next Step: Select 'Install Deck Jump Loader' from the menu to install the signed deck-sb EFI and boot menu entries."

@@ -194,7 +194,7 @@ The main builder will auto-run this if `resigner.sh` sits next to it. If not, it
 
 You can also point the resigner at other similar ISOs to make them bootable under these keys.
 
-> **Heads-up:** `resigner.sh` rewrites the El Torito image in-place based on its original offset. On rare ISOs that pack data right after the EFI blob, this can corrupt the file. If that happens, pad the ISO with a little dummy data (e.g., `truncate -s +1M your.iso`) and rerun the resigner so the EFI image has breathing room.
+> **Heads-up:** `resigner.sh` rewrites the hidden EFI boot image inside the ISO at its original byte offset. On rare ISOs that pack data immediately after that blob, the rewrite can corrupt the file. If it happens, pad the ISO with a little dummy data (e.g., `truncate -s +1M your.iso`) and rerun the resigner so the EFI image has breathing room.
 
 ---
 
