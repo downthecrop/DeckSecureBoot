@@ -300,7 +300,6 @@ copy_iso_payload() {
   local rootmp="$1"
   local dest="$rootmp$ISO_RELATIVE_PATH"
   mkdir -p "$dest"
-  rm -f "$dest"/deck-sb.vmlinuz "$dest"/deck-sb.initrd "$dest"/deck-sb.sfs "$dest"/airootfs.sfs 2>/dev/null || true
 
   local avail
   avail=$(df -m --output=avail "$dest" | tail -n1 | tr -d ' ')
