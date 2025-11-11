@@ -13,7 +13,7 @@ This project builds an Arch-based live ISO for the Steam Deck (LCD and OLED) tha
 - Compatible with Clover Bootloader and Dual Boot setups (Window/SteamOS)
 - Key safety baked in: you cannot lock yourself out of disabling Secure Boot
 - No tricks. This is valid Secure Boot, Windows anti-cheat software treats the deck as compliant
-- Full reversible
+- Fully reversible
 
 This is heavily inspired by / a practical follow-up to:
 👉 **https://github.com/ryanrudolfoba/SecureBootForSteamDeck**
