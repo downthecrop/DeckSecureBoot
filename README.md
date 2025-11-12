@@ -4,6 +4,9 @@
 
 This project builds an Arch-based live ISO for the Steam Deck (LCD and OLED) that:
 
+[![Download](https://img.shields.io/badge/Download-latest-brightgreen?style=for-the-badge&logo=github)](https://github.com/downthecrop/DeckSecureBoot/releases/latest)
+
+
 ## Features
 
 - Easy to use to a menu on the Deck (D-Pad navigation)
