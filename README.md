@@ -1,3 +1,4 @@
+![](branding.png)
 # Steam Deck Secure Boot (Deck SB)
 **Status:** Beta 1.6
 
