@@ -9,12 +9,12 @@ Arch-based live ISO for Enabling Secure Boot the Steam Deck (LCD and OLED)
 
 ## Features
 
-- Easy to use to a menu on the Deck (D-Pad navigation)
-- Enables Secure Boot without the UEFI expsoing the toggle
+- Easy to use menu on the Deck (D-Pad navigation)
+- Enables Secure Boot without the UEFI exposing the toggle
 - Optional disk install to always have access to change SecureBoot status
 - Keeps SteamOS fully launchable while Secure Boot stays enabled
 - Supports every Steam Deck hardware revision (LCD and OLED)
-- Compatible with Clover Bootloader and Dual Boot setups (Window/SteamOS)
+- Compatible with Clover Bootloader and Dual Boot setups (Windows/SteamOS)
 - Key safety baked in: you cannot lock yourself out of disabling Secure Boot
 - No tricks. This is valid Secure Boot, Windows anti-cheat software treats the deck as compliant
 - Fully reversible
@@ -181,7 +181,7 @@ Usage:
 
 The main builder will auto-run `resigner.sh` on the generated ISO.
 
-You can also point the resigner at other ISOs to make them bootable under these keys (Ubuntu ect.).
+You can also point the resigner at other ISOs to make them bootable under these keys (Ubuntu etc.).
 
 > **Heads-up:** `resigner.sh` rewrites the hidden EFI boot image inside the ISO at its original byte offset. On rare ISOs that pack data immediately after that blob, the rewrite can corrupt the image. If it happens, try adding a little extra data to the ISO to shift around the structure and try again.
 
@@ -192,7 +192,7 @@ You can also point the resigner at other ISOs to make them bootable under these 
 1. Boot an Arch x86_64 container
 2. `sudo su`
 3. Clone the repo and navigate to it
-4. `./build.sh` will install all required dependancies and generate a new ISO. Finished ISOs are placed in `./out/` (or `/out` if that directory exists).
+4. `./build.sh` will install all required dependencies and generate a new ISO. Finished ISOs are placed in `./out/` (or `/out` if that directory exists).
 
 The builder writes ISOs to `/out` when that directory exists (handy inside containers) or `./out/`.
 
