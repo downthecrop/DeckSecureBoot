@@ -30,6 +30,8 @@ His work showed the steps. This repo automates them into an ISO.
 3. **Boot From USB** – Plug in the USB, hold `Vol-` + `Power`, and pick the USB device from the boot selector.
 4. **Run the menu** – the ISO boots into a menu where you can enroll keys, sign loaders, rerun the EFI installer, or disable Secure Boot later.
 
+![](https://github.com/downthecrop/misc/blob/main/CleanShot%202025-11-13%20at%2013.05.19%20(1).png?raw=true)
+
 ## How this works
 
 The Deck never shows a “turn on Secure Boot” toggle inside its UEFI UI, but Valve ships it in **setup mode**. Setup mode means the firmware happily accepts new Platform Keys (PK), Key Exchange Keys (KEK), and db signatures without user prompts. When you pick the enrollment/enable option in the menu, we drop our baked keys (plus Microsoft’s) into the firmware variables. As soon as the PK lands, the firmware automatically flips Secure Boot to **enabled**. Later, if you use the unenroll/disable option, we clear those vars; once the PK is gone the Deck re-enters setup mode and Secure Boot is **automatically disabled**. No hidden switches involved—just key presence or absence.
