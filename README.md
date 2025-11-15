@@ -1,3 +1,5 @@
+# Warning (11/14/2025): Deck LCD has Audio Driver Issues. Looking into a fix - 
+
 [![](https://github.com/downthecrop/misc/blob/main/branding.png?raw=true)](https://github.com/downthecrop/DeckSecureBoot/releases/latest)
 # Steam Deck Secure Boot (Deck SB)
 **Status:** Beta 1.6
