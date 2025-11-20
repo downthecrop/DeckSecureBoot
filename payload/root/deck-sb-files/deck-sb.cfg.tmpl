@@ -62,7 +62,7 @@ if test -n "$deck_win_path"; then
         insmod chain
         search --no-floppy --file $deck_win_path --set=root
         echo 'Tip: Boot Windows directly from the BIOS menu (Vol- + Power) to avoid Secure Boot prompts.'
-        echo 'If you are using Clover, Use (Vol+ + Power), Boot From File, efi/Microsoft/bootmgrw.efi'
+        echo 'If you use Clover: press Vol+ + Power, then Boot From File -> efi/Microsoft/bootmgfw.efi'
         echo ''
         echo 'Recommended: Disable BitLocker so chainloading from this menu or Clover can load Windows correctly.'
         sleep 2
@@ -144,12 +144,24 @@ if search --file $deck_iso_file --set=deck_iso_probe; then
             echo 'Deck SB on-disk debug:'
             echo "  device: $deck_iso"
             echo "  uuid:   $deck_iso_uuid"
-            echo "  kernel: ($deck_iso)/usr/local/share/deck-sb/arch/boot/x86_64/vmlinuz-linux"
-            echo "  initrd: ($deck_iso)/usr/local/share/deck-sb/arch/boot/x86_64/initramfs-linux.img"
+            set deck_iso_kernel="/usr/local/share/deck-sb/arch/boot/x86_64/vmlinuz-linux"
+            set deck_iso_initrd="/usr/local/share/deck-sb/arch/boot/x86_64/initramfs-linux.img"
+            set deck_iso_sfs="/usr/local/share/deck-sb/arch/x86_64/airootfs.sfs"
+            check_iso_file() {
+                set _label="$1"
+                set _path="$2"
+                if [ -f "($deck_iso)$_path" ]; then
+                    echo "  $_label: ($deck_iso)$_path [OK]"
+                else
+                    echo "  $_label: ($deck_iso)$_path [MISSING]"
+                fi
+            }
+            check_iso_file 'kernel' "$deck_iso_kernel"
+            check_iso_file 'initrd' "$deck_iso_initrd"
             echo "  archisobasedir=usr/local/share/deck-sb/arch"
             echo "  archisodevice=$deck_iso_devpath"
             echo "  img_dev=$deck_iso_devpath"
-            echo "  img_loop=/usr/local/share/deck-sb/arch/x86_64/airootfs.sfs"
+            check_iso_file 'img_loop' "$deck_iso_sfs"
             sleep 3
             linux ($deck_iso)/usr/local/share/deck-sb/arch/boot/x86_64/vmlinuz-linux archisobasedir=usr/local/share/deck-sb/arch archisodevice=$deck_iso_devpath img_dev=$deck_iso_devpath img_loop=/usr/local/share/deck-sb/arch/x86_64/airootfs.sfs copytoram=n
             initrd ($deck_iso)/usr/local/share/deck-sb/arch/boot/x86_64/initramfs-linux.img

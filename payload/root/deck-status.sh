@@ -1,73 +1,61 @@
 #!/bin/bash
-set -e
+set -euo pipefail
 
 # shellcheck disable=SC1091
 . /root/deck-env.sh
 
-BACKTITLE="${DECK_SB_BACKTITLE}"
 PENDING_FLAG="${DECK_SB_PENDING_FLAG}"
 
-MSG=""
+sbctl_state="missing"   # one of: missing, enabled, disabled, unknown
 
-if [[ -d /sys/firmware/efi ]]; then
-  MSG+="UEFI boot: YES\n"
-else
-  MSG+="UEFI boot: NO\n"
-fi
-
-if mountpoint -q /sys/firmware/efi/efivars 2>/dev/null; then
-  MSG+="efivars mounted: YES\n"
-else
-  MSG+="efivars mounted: NO\n"
-fi
-
-SBCTL_PRESENT=0
-SBCTL_ENABLED=0
-if command -v sbctl >/dev/null 2>&1; then
-  SBCTL_PRESENT=1
-  if secure_boot_enabled; then
-    SBCTL_ENABLED=1
-    MSG+="Secure Boot: YES\n"
-  else
-    SB_LINE=$(sbctl status 2>/dev/null | grep -i 'Secure Boot' || true)
-    if echo "$SB_LINE" | grep -qi 'disabled'; then
-      MSG+="Secure Boot: NO\n"
-    else
-      MSG+="Secure Boot: UNKNOWN (sbctl)\n"
-    fi
+sbctl_status() {
+  sb_status="Secure Boot: sbctl not found"
+  if ! command -v sbctl >/dev/null 2>&1; then
+    return
   fi
-else
-  MSG+="Secure Boot: sbctl not found\n"
-fi
 
-if [ -f "$PENDING_FLAG" ]; then
-  PENDING_STATE=$(cat "$PENDING_FLAG" 2>/dev/null | tr -d '\r\n')
-  case "$PENDING_STATE" in
-    enable)
-      if [ "$SBCTL_PRESENT" -eq 1 ] && [ "$SBCTL_ENABLED" -eq 1 ]; then
-        MSG+="\nSecure Boot enable change appears active now.\n"
-        rm -f "$PENDING_FLAG"
-      else
-        MSG+="\nSecure Boot enable is pending; reboot is required to apply your changes.\n"
-      fi
-      ;;
-    disable)
-      if [ "$SBCTL_PRESENT" -eq 1 ] && [ "$SBCTL_ENABLED" -eq 0 ]; then
-        MSG+="\nSecure Boot disable change appears active now.\n"
-        rm -f "$PENDING_FLAG"
-      else
-        MSG+="\nSecure Boot disable is pending; reboot is required to apply your changes.\n"
-      fi
-      ;;
-    *)
-      if [ "$SBCTL_PRESENT" -eq 1 ] && [ "$SBCTL_ENABLED" -eq 1 ]; then
-        MSG+="\nSecure Boot change appears active now.\n"
-        rm -f "$PENDING_FLAG"
-      else
-        MSG+="\nYou have changed SecureBoot State, a reboot is required to apply your changes.\n"
-      fi
-      ;;
+  if secure_boot_enabled; then
+    sbctl_state="enabled"
+    sb_status="Secure Boot: YES"
+    return
+  fi
+
+  local sb_line
+  sb_line=$(sbctl status 2>/dev/null | grep -i 'Secure Boot' || true)
+  if echo "$sb_line" | grep -qi 'disabled'; then
+    sbctl_state="disabled"
+    sb_status="Secure Boot: NO"
+  else
+    sbctl_state="unknown"
+    sb_status="Secure Boot: UNKNOWN (sbctl)"
+  fi
+}
+
+pending_message() {
+  [ -f "$PENDING_FLAG" ] || return
+  local state applied=0 msg
+  state=$(tr -d '\r\n' < "$PENDING_FLAG" 2>/dev/null)
+  case "$state" in
+    enable)  msg="Secure Boot enable is pending; reboot to apply your changes." ; [ "$sbctl_state" = "enabled" ] && applied=1 ;;
+    disable) msg="Secure Boot disable is pending; reboot to apply your changes." ; [ "$sbctl_state" = "disabled" ] && applied=1 ;;
+    *)       msg="Secure Boot state changed; reboot to apply your changes."     ; [[ "$sbctl_state" == "enabled" || "$sbctl_state" == "disabled" ]] && applied=1 ;;
   esac
-fi
+  if [ "$applied" -eq 1 ]; then
+    msg="Secure Boot change appears active now."
+    rm -f "$PENDING_FLAG"
+  fi
+  printf '%s\n' "$msg"
+}
 
-dialog --backtitle "$BACKTITLE" --msgbox "$MSG" 22 90
+sbctl_status
+pending_note=$(pending_message || true)
+
+status_lines=(
+  "UEFI boot: $( [[ -d /sys/firmware/efi ]] && echo YES || echo NO )"
+  "efivars mounted: $( mountpoint -q /sys/firmware/efi/efivars 2>/dev/null && echo YES || echo NO )"
+  "$sb_status"
+)
+
+[ -n "$pending_note" ] && status_lines+=("" "$pending_note")
+
+deck_dialog --msgbox "$(printf '%s\n' "${status_lines[@]}")" 18 90

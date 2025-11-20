@@ -1,5 +1,5 @@
 #!/bin/bash
-set -e
+set -euo pipefail
 chmod +x /root/menu.sh \
   /root/deck-enroll.sh \
   /root/deck-unenroll.sh \

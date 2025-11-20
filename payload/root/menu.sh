@@ -1,4 +1,5 @@
 #!/bin/bash
+set -euo pipefail
 export DIALOGRC=/etc/dialogrc
 
 # shellcheck disable=SC1091
@@ -25,13 +26,18 @@ EOM
 
 while true; do
   PEND=$(pending_flag)
+  JUMP_LABEL="Install Deck SB Jump Loader"
+  if /root/deck-install-jump.sh --detect-installed >/dev/null 2>&1; then
+    JUMP_LABEL="Reinstall/Remove Deck SB Jump Loader"
+  fi
+
   if ! CHOICE=$(dialog --clear --stdout \
       --backtitle "$BACKTITLE" \
       --title "Main Menu" \
       --menu "Select an action" 0 0 0 \
       1 "Check Boot Status${PEND}" \
       2 "Enable Secure Boot" \
-      3 "Install SteamOS Jump Loader" \
+      3 "$JUMP_LABEL" \
       4 "Install Deck SB ISO to disk *Optional* (~400MB)" \
       5 "Signing Utility" \
       6 "--------------------------------" \
@@ -44,14 +50,27 @@ while true; do
 
   case "$CHOICE" in
     1) /root/deck-status.sh ;;
-    2) OUT=$(/root/deck-enroll.sh 2>&1 || true); dialog --backtitle "$BACKTITLE" --msgbox "$OUT" 22 90 ;;
-    3) /root/deck-install-jump.sh ;;
+    2) OUT=$(/root/deck-enroll.sh 2>&1 || true); deck_dialog --msgbox "$OUT" 22 90 ;;
+    3)
+      if /root/deck-install-jump.sh --detect-installed >/dev/null 2>&1; then
+        SUB=$(dialog --clear --stdout --backtitle "$BACKTITLE" --default-item 1 \
+          --menu "Deck SB Jump Loader" 0 0 0 \
+          1 "Reinstall jump loader" \
+          2 "Remove jump loader") || continue
+        case "$SUB" in
+          1) /root/deck-install-jump.sh ;;
+          2) /root/deck-install-jump.sh --remove ;;
+        esac
+      else
+        /root/deck-install-jump.sh
+      fi
+      ;;
     4) /root/deck-install-iso.sh ;;
     5) /root/deck-sign-efi.sh ;;
     6) : ;;
     7) reboot ;;
     8) poweroff ;;
     9) open_shell ;;
-    10) OUT=$(/root/deck-unenroll.sh 2>&1 || true); dialog --backtitle "$BACKTITLE" --msgbox "$OUT" 22 90 ;;
+    10) OUT=$(/root/deck-unenroll.sh 2>&1 || true); deck_dialog --msgbox "$OUT" 22 90 ;;
   esac
 done

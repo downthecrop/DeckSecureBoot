@@ -1,23 +1,15 @@
 #!/bin/bash
-set -e
+set -euo pipefail
 
 # shellcheck disable=SC1091
 . /root/deck-env.sh
-
-BACKTITLE="${DECK_SB_BACKTITLE}"
-
-deck_dialog() {
-  dialog --backtitle "$BACKTITLE" "$@"
-}
 
 if [ "$(id -u)" -ne 0 ]; then
   echo "This needs to run as root (sbctl writes under /var/lib/sbctl)."
   exit 1
 fi
 
-for bin in sbctl lsblk mount find findmnt; do
-  command -v "$bin" >/dev/null 2>&1 || { echo "$bin not found"; exit 1; }
-done
+require_bins sbctl lsblk mount find findmnt
 
 FIND_TIMEOUT=${FIND_TIMEOUT:-15}
 TIMEOUT_BIN=$(command -v timeout || true)
@@ -41,145 +33,42 @@ declare -A ADDED_DIRS=()
 declare -A SEEN_FILES=()
 
 cleanup() {
-  for m in "${TEMP_MOUNTS[@]}"; do
-    umount "$m" 2>/dev/null || true
-    rmdir "$m" 2>/dev/null || true
-  done
+  cleanup_mounts TEMP_MOUNTS
 }
 trap cleanup EXIT
 
-add_search_dir() {
-  local dir="$1"
-  [ -d "$dir" ] || return 0
-  if [[ -n "$ISO_MOUNT" && "$dir" == "$ISO_MOUNT"* ]]; then
-    return 0
-  fi
-  if [[ -n "${ADDED_DIRS[$dir]:-}" ]]; then
-    return 0
-  fi
-  SEARCH_DIRS+=("$dir")
-  ADDED_DIRS["$dir"]=1
-}
-
-add_candidate() {
-  local path="$1"
-  [ -f "$path" ] || return 0
-  if [[ -n "$ISO_MOUNT" && "$path" == "$ISO_MOUNT"* ]]; then
-    return 0
-  fi
-  if [[ -n "${SEEN_FILES[$path]:-}" ]]; then
-    return 0
-  fi
-  ALL+=("$path")
-  SEEN_FILES["$path"]=1
-}
-
-ROOTS=(
-  /boot
-  /boot/efi
-  /efi
-  /mnt
-  /run/media/*/*
-)
-
-for r in "${ROOTS[@]}"; do
-  for p in $r; do
-    add_search_dir "$p"
-  done
-done
-
+seed_default_search_dirs "SEARCH_DIRS" "ADDED_DIRS" "$ISO_MOUNT"
 progress_msg() {
   local msg="$1"
   deck_dialog --infobox "$msg" 5 70
 }
 
+display_path() {
+  format_display_path "$1" "$TMP_EFI_MOUNT_BASE" "$TMP_LINUX_MOUNT_BASE"
+}
+
 progress_msg "Scanning disks for EFI files and kernels..."
-
-while read -r dev fstype parttype mnt; do
-  [[ -b "$dev" ]] || continue
-  fstype=${fstype,,}
-  parttype=${parttype^^}
-
-  mount_base=""
-  add_boot_dir=0
-
-  if [[ "$fstype" =~ ^(vfat|fat|fat16|fat32)$ || "$parttype" == "C12A7328-F81F-11D2-BA4B-00A0C93EC93B" ]]; then
-    mount_base="$TMP_EFI_MOUNT_BASE"
-  elif [[ "$fstype" =~ ^($LINUX_FSTYPES)$ ]]; then
-    mount_base="$TMP_LINUX_MOUNT_BASE"
-    add_boot_dir=1
-  else
-    for guid in "${LINUX_GPT_GUIDS[@]}"; do
-      if [[ "$parttype" == "$guid" ]]; then
-        mount_base="$TMP_LINUX_MOUNT_BASE"
-        add_boot_dir=1
-        break
-      fi
-    done
-  fi
-
-  [ -n "$mount_base" ] || continue
-
-  if [ -z "$mnt" ] || [ "$mnt" = "-" ]; then
-    mnt="$mount_base/$(basename "$dev")"
-    mkdir -p "$mnt"
-    if mount -o ro "$dev" "$mnt"; then
-      TEMP_MOUNTS+=("$mnt")
-    else
-      rmdir "$mnt"
-      continue
-    fi
-  fi
-
-  if [ "$mount_base" = "$TMP_EFI_MOUNT_BASE" ]; then
-    add_search_dir "$mnt/EFI"
-    progress_msg "Mounted EFI $(basename "$dev")"
-  else
-    add_search_dir "$mnt/boot"
-    add_search_dir "$mnt/boot/EFI"
-    progress_msg "Mounted Linux $(basename "$dev")"
-  fi
-done < <(lsblk -rpno NAME,FSTYPE,PARTTYPE,MOUNTPOINT)
+collect_device_search_dirs "SEARCH_DIRS" "ADDED_DIRS" "TEMP_MOUNTS" "$ISO_MOUNT" "$TMP_EFI_MOUNT_BASE" "$TMP_LINUX_MOUNT_BASE" progress_msg
 
 ALL=()
 
-run_find() {
-  local dir="$1"
-  [ -d "$dir" ] || return
-  local opts
-  if [[ "$dir" == *EFI* ]]; then
-    opts=(-iname '*.efi')
-  else
-    opts=( -iname 'vmlinuz*' )
-  fi
-  local cmd=(find "$dir" -maxdepth 4 -type f "${opts[@]}" -print0)
-  if [ -n "$TIMEOUT_BIN" ]; then
-    "$TIMEOUT_BIN" "$FIND_TIMEOUT" "${cmd[@]}" 2>/dev/null
-  else
-    "${cmd[@]}" 2>/dev/null
-  fi
+show_dialog_msg() {
+  local heading="$1" body="$2" height="${3:-15}" width="${4:-90}"
+  [ -n "$body" ] || body="(no sbctl output)"
+  deck_dialog --msgbox "$(printf '%s\n\n%s' "$heading" "$body")" "$height" "$width"
 }
 
 ensure_rw() {
-  local path="$1"
-  local mp opts
-  mp=$(findmnt -rno TARGET -T "$path" 2>/dev/null || true)
-  opts=$(findmnt -rno OPTIONS -T "$path" 2>/dev/null || true)
-  [ -n "$mp" ] || return 0
-  if [[ "$opts" == *ro* ]]; then
-    if mount -o remount,rw "$mp" 2>/dev/null; then
-      return 0
-    fi
-    printf 'Filesystem %s is mounted read-only. Remount it writable and try again.\n' "$mp"
-    return 1
-  fi
-  return 0
+  ensure_rw_for_path "$@"
 }
 
 for dir in "${SEARCH_DIRS[@]}"; do
   while IFS= read -r -d '' f; do
-    add_candidate "$f"
-  done < <(run_find "$dir" || true)
+    add_unique_file "ALL" "SEEN_FILES" "$ISO_MOUNT" "$f"
+  done < <(run_find_timeout "$dir" 4 -type f -iname '*.efi' || true)
+  while IFS= read -r -d '' k; do
+    add_unique_file "ALL" "SEEN_FILES" "$ISO_MOUNT" "$k"
+  done < <(run_find_timeout "$dir" 8 -type f -iname 'vmlinuz*' || true)
 done
 deck_dialog --clear
 
@@ -198,38 +87,6 @@ loader_variant_label() {
   fi
 }
 
-format_display_path() {
-  local path="$1"
-  local display="$path"
-  for prefix in "$TMP_EFI_MOUNT_BASE" "$TMP_LINUX_MOUNT_BASE"; do
-    if [[ -n "$prefix" && "$display" == "$prefix"* ]]; then
-      display="${display#"$prefix"}"
-      display="${display#/}"
-    fi
-  done
-  echo "$display"
-}
-
-sanitize_dialog_text() {
-  # Strip non-printable bytes so dialog doesn't show garbled characters
-  LC_ALL=C tr -cd '\11\12\15\40-\176'
-}
-
-show_dialog_msg() {
-  local heading="$1"
-  local body="$2"
-  local height="${3:-15}"
-  local width="${4:-90}"
-
-  if [ -z "$body" ]; then
-    body="(no sbctl output)"
-  fi
-
-  local msg
-  printf -v msg '%s\n\n%s' "$heading" "$body"
-  deck_dialog --msgbox "$msg" "$height" "$width"
-}
-
 sign_clover_bundle() {
   local files=("$@")
   if [ "${#files[@]}" -eq 0 ]; then
@@ -239,7 +96,7 @@ sign_clover_bundle() {
 
   local file display
   for file in "${files[@]}"; do
-    display=$(format_display_path "$file")
+    display=$(display_path "$file")
     if ! ERR=$(ensure_rw "$file"); then
       deck_dialog --msgbox "${ERR:-Unable to access $display.}" 9 70
       return 1
@@ -249,11 +106,11 @@ sign_clover_bundle() {
   local summary=""
   local success=0 already=0 failed=0
   for file in "${files[@]}"; do
-    display=$(format_display_path "$file")
+    display=$(display_path "$file")
     deck_dialog --infobox "Signing Clover EFI:\n$display" 6 70
     RAW_OUTPUT=$(sbctl sign -s "$file" 2>&1)
     STATUS=$?
-    OUTPUT=$(printf '%s' "$RAW_OUTPUT" | sanitize_dialog_text)
+    OUTPUT=$(printf '%s' "$RAW_OUTPUT" | sanitize_printable)
     if [ $STATUS -eq 0 ]; then
       summary+="$display: signed\n"
       success=$((success + 1))
@@ -266,52 +123,48 @@ sign_clover_bundle() {
     fi
   done
 
-  summary=$(printf '%s' "$summary" | sanitize_dialog_text)
+  summary=$(printf '%s' "$summary" | sanitize_printable)
   local heading
   if [ $failed -eq 0 ]; then
     heading="Clover EFIs signing summary (signed: $success, already: $already)"
   else
     heading="Clover EFIs signing summary (signed: $success, already: $already, failed: $failed)"
   fi
-  show_dialog_msg "$heading" "$summary" 20 90
+  deck_dialog --msgbox "$(printf '%s\n\n%s' "$heading" "$summary")" 20 90
   return 0
 }
 
 guess_kind() {
   local path="$1"
   local lower="${path,,}"
-  local variant
+  local variant label
   variant=$(loader_variant_label "$lower")
 
   if [[ "$lower" == *steamcl*.efi ]]; then
-    echo "SteamOS (Default)"
+    label="SteamOS (Default)"
   elif [[ "$lower" == *efi/steamos/* && "$lower" == *grub*.efi* ]]; then
-    echo "SteamOS (GRUB)"
+    label="SteamOS (GRUB)"
   elif [[ "$lower" == *efi/steamos/* ]]; then
-    echo "SteamOS loader"
+    label="SteamOS loader"
   elif [[ "$lower" == *vmlinuz* ]]; then
-    echo "Linux kernel"
+    label="Linux kernel"
   elif [[ "$lower" == *ubuntu* ]]; then
-    if [ -n "$variant" ]; then
-      echo "Ubuntu $variant"
-    else
-      echo "Ubuntu loader"
-    fi
+    label=${variant:+Ubuntu $variant}
+    [ -n "$label" ] || label="Ubuntu loader"
   elif [[ "$lower" == *fedora* ]]; then
-    if [ -n "$variant" ]; then
-      echo "Fedora $variant"
-    else
-      echo "Fedora loader"
-    fi
+    label=${variant:+Fedora $variant}
+    [ -n "$label" ] || label="Fedora loader"
   elif [[ "$lower" == *microsoft* || "$lower" == *bootmgfw.efi* ]]; then
-    echo "Windows bootmgfw"
+    label="Windows bootmgfw"
   elif [[ "$lower" == *efi/boot/bootx64.efi* ]]; then
-    echo "Generic UEFI bootloader"
+    label="Generic UEFI bootloader"
   elif [ -n "$variant" ]; then
-    echo "$variant"
+    label="$variant"
   else
-    echo "Unknown EFI"
+    label="Unknown EFI"
   fi
+
+  echo "$label"
 }
 
 if [ "${#ALL[@]}" -eq 0 ]; then
@@ -362,7 +215,7 @@ while true; do
 
   for c in "${NON_CLOVER_ORDERED[@]}"; do
     KIND=$(guess_kind "$c")
-    DISPLAY_PATH=$(format_display_path "$c")
+    DISPLAY_PATH=$(display_path "$c")
     MENU+=("$i" "$KIND :: $DISPLAY_PATH")
     PICK_TARGETS+=("$c")
     i=$((i+1))
@@ -396,19 +249,19 @@ while true; do
   deck_dialog --infobox "Signing:\n$TARGET" 6 70
   RAW_OUTPUT=$(sbctl sign -s "$TARGET" 2>&1)
   STATUS=$?
-  OUTPUT=$(printf '%s' "$RAW_OUTPUT" | sanitize_dialog_text)
+  OUTPUT=$(printf '%s' "$RAW_OUTPUT" | sanitize_printable)
 
   if [ $STATUS -eq 0 ]; then
-    show_dialog_msg "Signing succeeded" "$OUTPUT"
+    deck_message_box "Signing succeeded" "$OUTPUT"
     continue
   fi
 
   if printf '%s' "$OUTPUT" | grep -qi 'already been signed'; then
-    show_dialog_msg "Already signed" "$OUTPUT"
+    deck_message_box "Already signed" "$OUTPUT"
     continue
   fi
 
-  show_dialog_msg "Signing failed (exit $STATUS)" "$OUTPUT"
+  deck_message_box "Signing failed (exit $STATUS)" "$OUTPUT"
 done
 
 exit 0

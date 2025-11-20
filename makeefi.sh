@@ -179,6 +179,6 @@ echo "Deploy on Deck:"
 echo "  sudo mount /dev/nvme0n1p1 /mnt/esp"
 echo "  sudo mkdir -p /mnt/esp/EFI/deck-sb"
 echo "  sudo cp $OUT_EFI /mnt/esp/EFI/deck-sb/jump.efi"
-echo "  sudo efibootmgr -c -d /dev/nvme0n1 -p 1 -l '\\EFI\\deck-sb\\jump.efi' -L 'SteamOS (custom jump)'"
+echo "  sudo efibootmgr -c -d /dev/nvme0n1 -p 1 -l '\\EFI\\deck-sb\\jump.efi' -L 'Deck SB (Custom Jump)'"
 echo
 echo "Then have your ISO write /EFI/deck-sb/deck-sb.cfg on that same ESP."

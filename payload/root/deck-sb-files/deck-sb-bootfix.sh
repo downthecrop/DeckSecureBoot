@@ -1,5 +1,5 @@
 #!/bin/bash
-LABEL='SteamOS (custom jump)'
+LABEL='Deck SB (Custom Jump)'
 TARGET="\\EFI\\deck-sb\\jump.efi"
 
 # Steam Deck specific defaults
