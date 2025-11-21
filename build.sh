@@ -3,22 +3,7 @@ set -euo pipefail
 
 # ---------------------------------------------------------------------------
 # Steam Deck Secure Boot ISO builder (plain ncurses)
-# Version: Beta 1.6
-#
-# - Archiso baseline -> custom profile
-# - UEFI + systemd-boot only
-# - Baked sbctl keys in TWO places:
-#     /usr/share/deck-sb/keys
-#     /var/lib/sbctl/keys/... (new sbctl layout)
-# - Fixed sbctl GUID: decdecde-dec0-4dec-adec-decdecdecdec
-# - Boots straight into /root/menu.sh
-# - systemd-boot hidden (timeout 0) to avoid portrait menu
-# - If ./resigner.sh is present beside this script, we post-process the ISO
-#   to sign the hidden EFI image (the method we proved works)
-# - EFI signers now:
-#     * skip our own ISO mount (/run/archiso/bootmnt/…)
-#     * label likely OS
-#     * error out cleanly if not root
+# Version: Beta 1.7
 # ---------------------------------------------------------------------------
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
@@ -55,7 +40,7 @@ ISO_UNWANTED_PKGS=(
   zsh grml-zsh-config livecd-sounds terminus-font
 )
 
-echo "[+] Steam Deck SB ISO build (Beta 1.6)"
+echo "[+] Steam Deck SB ISO build (Beta 1.7)"
 echo "[+] workdir     : $WORKDIR"
 echo "[+] profile dir : $PROFILE_DIR"
 echo "[+] payload dir : $PAYLOAD_DIR"

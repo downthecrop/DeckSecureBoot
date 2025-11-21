@@ -2,7 +2,7 @@
 
 [![](https://github.com/downthecrop/misc/blob/main/branding.png?raw=true)](https://github.com/downthecrop/DeckSecureBoot/releases/latest)
 # Steam Deck Secure Boot (Deck SB)
-**Status:** Beta 1.6
+**Status:** Beta 1.7
 
 Arch-based live ISO for Enabling Secure Boot the Steam Deck (LCD and OLED)
 
@@ -166,6 +166,31 @@ These are embedded inside the ISO to KEK/db so we can also *clear* secure boot l
 
 ---
 
+## The resigner (important)
+
+**Utility:** `resigner.sh` patches the hidden EFI image inside the ISO:
+
+1. Find the El Torito UEFI image
+2. Extract it
+3. Sign `EFI/BOOT/BOOTx64.EFI` (and IA32 if present) with the baked keys
+4. Write it back at the same offset
+5. Outputs `*-signed.iso`
+
+Usage:
+
+```bash
+./resigner.sh archlinux-steamdeck-sb-latest-x86_64.iso
+# -> archlinux-steamdeck-sb-latest-x86_64-signed.iso
+```
+
+The main builder will auto-run `resigner.sh` on the generated ISO.
+
+You can also point the resigner at other ISOs to make them bootable under these keys (Ubuntu etc.).
+
+> **Heads-up:** `resigner.sh` rewrites the hidden EFI boot image inside the ISO at its original byte offset. On rare ISOs that pack data immediately after that blob, the rewrite can corrupt the image. If it happens, try adding a little extra data to the ISO to shift around the structure and try again.
+
+---
+
 ## Building it yourself
 
 1. Boot an Arch x86_64 container
@@ -198,29 +223,13 @@ cd DeckSecureBoot
 
 ---
 
-## Resigner
+## Booting it on the Deck
 
-**Utility:** `resigner.sh` patches the hidden EFI image inside the ISO:
+1. Power off Deck
+2. Hold **Volume -** and press **Power**
+3. Pick the USB you flashed the ISO to
 
-1. Find the El Torito UEFI image
-2. Extract it
-3. Sign `EFI/BOOT/BOOTx64.EFI` (and IA32 if present) with the baked keys
-4. Write it back at the same offset
-5. Outputs `*-signed.iso`
-
-Usage:
-
-```bash
-./resigner.sh archlinux-steamdeck-sb-latest-x86_64.iso
-# -> archlinux-steamdeck-sb-latest-x86_64-signed.iso
-```
-
-The main builder will auto-run `resigner.sh` on the generated ISO.
-
-You can also point the resigner at other ISOs to make them bootable under these keys (Ubuntu etc.).
-
-> **Heads-up:** `resigner.sh` rewrites the hidden EFI boot image inside the ISO at its original byte offset. On rare ISOs that pack data immediately after that blob, the rewrite can corrupt the image. If it happens, try adding a little extra data to the ISO to shift around the structure and try again.
-
+> If you choose to install the ISO to disk in the menu (optional) it will appear in the DeckSB Jumploader (jump.efi)
 ---
 
 ## Credits

@@ -6,6 +6,10 @@
 : "${DECK_SB_TARGET_FILENAME:=jump.efi}"
 : "${DECK_SB_OLD_EFI_LABEL:=SteamOS (custom jump)}"
 : "${DECK_SB_NEW_EFI_LABEL:=Deck SB (Custom Jump)}"
+: "${DECK_SB_STATE_DIR:=/run/deck-sb}"
+: "${DECK_SB_JUMP_STATE_FILE:=$DECK_SB_STATE_DIR/jump.state}"
+: "${STEAMOS_ROOT_BASE:=/run/deck-os}"
+: "${STEAMOS_BOOT_BASE:=/run/deck-boot}"
 
 export DECK_SB_BACKTITLE
 export DECK_SB_KEYDIR
@@ -13,6 +17,10 @@ export DECK_SB_PENDING_FLAG
 export DECK_SB_TARGET_FILENAME
 export DECK_SB_OLD_EFI_LABEL
 export DECK_SB_NEW_EFI_LABEL
+export DECK_SB_STATE_DIR
+export DECK_SB_JUMP_STATE_FILE
+export STEAMOS_ROOT_BASE
+export STEAMOS_BOOT_BASE
 
 require_bins() {
   # Verify required binaries exist; exit with a helpful list if any are missing.

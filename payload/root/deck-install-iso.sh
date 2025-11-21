@@ -4,14 +4,43 @@ set -euo pipefail
 # shellcheck disable=SC1091
 . /root/deck-env.sh
 
+NOTHING=" "
+
+BACKTITLE="${DECK_SB_BACKTITLE}"
 ISO_RELATIVE_PATH="/usr/local/share/deck-sb"
 ISO_VOLUME_LABEL="${DECK_SB_ISO_LABEL:-DECK_SB}"
 ISO_INSTALL_DIR="${DECK_SB_INSTALL_DIR:-arch}"
 TEMP_ISO_MOUNT=""
 REQUIRED_MB=400
-STEAMOS_ROOT_BASE="${STEAMOS_ROOT_BASE:-/run/deck-os}"
-declare -a TEMP_MOUNTS=()
-ISO_ROOTS=()
+
+require_bins() {
+  local missing=()
+  for bin in dialog lsblk mount findmnt install df find; do
+    command -v "$bin" >/dev/null 2>&1 || missing+=("$bin")
+  done
+  command -v btrfs >/dev/null 2>&1 || true
+  if [ "${#missing[@]}" -ne 0 ]; then
+    printf 'Missing required utilities: %s\n' "${missing[*]}" >&2
+    exit 1
+  fi
+}
+
+format_display_path() {
+  local path="$1"
+  [ -n "$path" ] || return 0
+  printf '%s\n' "$path" | sed -e 's://*:/:g'
+}
+
+error_dialog() { deck_message_box "$1" "" 10 80; }
+info_dialog() { deck_message_box "$1" "" 8 80; }
+progress_dialog() { deck_dialog --infobox "$1" 6 70; }
+
+show_detected_volumes() {
+  local lines
+  lines=$(lsblk -rpno NAME,FSTYPE,LABEL,MOUNTPOINT 2>/dev/null || true)
+  [ -n "$lines" ] || lines="(none found)"
+  deck_message_box "Detected volumes (NAME FSTYPE LABEL MOUNTPOINT)" "$lines" 20 90
+}
 
 cleanup_temp_iso_mount() {
   if [ -n "$TEMP_ISO_MOUNT" ]; then
@@ -19,14 +48,6 @@ cleanup_temp_iso_mount() {
     rmdir "$TEMP_ISO_MOUNT" 2>/dev/null || true
     TEMP_ISO_MOUNT=""
   fi
-}
-
-cleanup_temp_roots() {
-  cleanup_mounts TEMP_MOUNTS
-}
-
-iso_dialog() {
-  deck_message_box "$@"
 }
 
 collect_iso_roots() {
@@ -56,13 +77,20 @@ collect_iso_roots() {
 }
 
 find_live_usb_device() {
-  local dev fstype label
+  local dev fstype label fallback=""
   while read -r dev fstype label; do
     if [ -n "$label" ] && [ "$label" = "$ISO_VOLUME_LABEL" ]; then
       echo "$dev"
       return 0
     fi
+    if [ -z "$fallback" ] && [[ "${fstype,,}" =~ ^(iso9660|udf)$ ]]; then
+      fallback="$dev"
+    fi
   done < <(lsblk -rpno NAME,FSTYPE,LABEL 2>/dev/null || true)
+  if [ -n "$fallback" ]; then
+    echo "$fallback"
+    return 0
+  fi
   return 1
 }
 
@@ -104,8 +132,11 @@ find_kernel_source() {
       return 0
     fi
   done
-  load_iso_roots_once
-  for path in "${ISO_ROOTS[@]}"; do
+  local iso_roots=()
+  while IFS= read -r path; do
+    [ -n "$path" ] && iso_roots+=("$path")
+  done < <(collect_iso_roots 2>/dev/null || true)
+  for path in "${iso_roots[@]}"; do
     local iso_candidates=(
       "$path/$ISO_INSTALL_DIR/boot/x86_64/vmlinuz-linux"
       "$path/$ISO_INSTALL_DIR/boot/vmlinuz-linux"
@@ -140,8 +171,11 @@ find_initrd_source() {
       return 0
     fi
   done
-  load_iso_roots_once
-  for path in "${ISO_ROOTS[@]}"; do
+  local iso_roots=()
+  while IFS= read -r path; do
+    [ -n "$path" ] && iso_roots+=("$path")
+  done < <(collect_iso_roots 2>/dev/null || true)
+  for path in "${iso_roots[@]}"; do
     local iso_candidates=(
       "$path/$ISO_INSTALL_DIR/boot/x86_64/initramfs-linux.img"
       "$path/$ISO_INSTALL_DIR/boot/initramfs-linux.img"
@@ -162,13 +196,76 @@ find_initrd_source() {
   return 1
 }
 
-load_iso_roots_once() {
-  if [ "${#ISO_ROOTS[@]}" -ne 0 ]; then
-    return
+ensure_rw_mount() {
+  local mp="$1"
+  local opts
+  opts=$(findmnt -nro OPTIONS --target "$mp" 2>/dev/null || true)
+  if [ -z "$opts" ]; then
+    return 0
   fi
-  while IFS= read -r path; do
-    [ -n "$path" ] && ISO_ROOTS+=("$path")
-  done < <(collect_iso_roots 2>/dev/null || true)
+  if [[ "$opts" == *ro* ]]; then
+    mount -o remount,rw "$mp" 2>/dev/null || return 1
+  fi
+  return 0
+}
+
+is_steamos_tree() {
+  local dir="$1"
+  [ -n "$dir" ] && [ -f "$dir/etc/os-release" ] && grep -qi "SteamOS" "$dir/etc/os-release" 2>/dev/null
+}
+
+prepare_steamos_root_for_write() {
+  local rootmp="$1"
+  if ensure_rw_mount "$rootmp"; then
+    return 0
+  fi
+  local fstype
+  fstype=$(findmnt -nr -T "$rootmp" -o FSTYPE 2>/dev/null || true)
+  if [ "$fstype" = "btrfs" ] && command -v btrfs >/dev/null 2>&1; then
+    if btrfs property get -ts "$rootmp" ro >/dev/null 2>&1; then
+      btrfs property set -ts "$rootmp" ro false >/dev/null 2>&1 || true
+      ensure_rw_mount "$rootmp" && return 0
+    fi
+  fi
+  if [ -x "$rootmp/usr/bin/steamos-readonly" ]; then
+    chroot "$rootmp" /usr/bin/steamos-readonly disable 2>/dev/null || true
+    ensure_rw_mount "$rootmp" && return 0
+  fi
+  return 1
+}
+
+find_steamos_root() {
+  local partmp mounted_here
+  while read -r dev fstype parttype mnt; do
+    [[ -b "$dev" ]] || continue
+    local lowerfstype="${fstype,,}"
+    if [[ "$lowerfstype" =~ ^(vfat|fat|fat16|fat32)$ ]]; then
+      continue
+    fi
+    if [[ "$lowerfstype" =~ ^(ext4|btrfs|xfs|f2fs)$ ]]; then
+      partmp="$mnt"
+      mounted_here=0
+      if [ -z "$partmp" ] || [ "$partmp" = "-" ]; then
+        partmp="/run/deck-os/$(basename "$dev")"
+        mkdir -p "$partmp"
+        if mount "$dev" "$partmp"; then
+          mounted_here=1
+        else
+          rmdir "$partmp"
+          continue
+        fi
+      fi
+      if is_steamos_tree "$partmp"; then
+        echo "$partmp"
+        return 0
+      fi
+      if [ "$mounted_here" -eq 1 ]; then
+        umount "$partmp" 2>/dev/null || true
+        rmdir "$partmp" 2>/dev/null || true
+      fi
+    fi
+  done < <(lsblk -rpno NAME,FSTYPE,PARTTYPE,MOUNTPOINT)
+  return 1
 }
 
 find_squashfs_source() {
@@ -184,8 +281,11 @@ find_squashfs_source() {
     fi
   done
   local path
-  load_iso_roots_once
-  for path in "${ISO_ROOTS[@]}"; do
+  local iso_roots=()
+  while IFS= read -r path; do
+    [ -n "$path" ] && iso_roots+=("$path")
+  done < <(collect_iso_roots 2>/dev/null || true)
+  for path in "${iso_roots[@]}"; do
     local iso_candidates=(
       "$path/$ISO_INSTALL_DIR/x86_64/airootfs.sfs"
       "$path/$ISO_INSTALL_DIR/airootfs.sfs"
@@ -210,7 +310,7 @@ copy_iso_payload() {
   local avail
   avail=$(df -m --output=avail "$dest" | tail -n1 | tr -d ' ')
   if [ -n "$avail" ] && [ "$avail" -lt "$REQUIRED_MB" ]; then
-    deck_dialog --msgbox "SteamOS partition has only ${avail}MB free; ${REQUIRED_MB}MB required." 10 80
+    error_dialog "SteamOS partition has only ${avail}MB free; ${REQUIRED_MB}MB required."
     return 1
   fi
 
@@ -222,7 +322,7 @@ copy_iso_payload() {
   squash_src=$(find_squashfs_source 2>/dev/null || true)
 
   if [ -z "$kernel_src" ] || [ -z "$initrd_src" ] || [ -z "$squash_src" ]; then
-    deck_dialog --msgbox "Live ISO files missing. Ensure the Secure Boot USB (${ISO_VOLUME_LABEL}) is connected and readable." 10 80
+    error_dialog "Live ISO files missing. Ensure the Secure Boot USB (${ISO_VOLUME_LABEL}) is connected and readable."
     return 1
   fi
 
@@ -250,7 +350,7 @@ copy_iso_payload() {
       exec 3>&-
       wait "$gauge_pid" 2>/dev/null || true
       rm -f "$fifo"
-      deck_dialog --msgbox "Failed copying ${files[i]} to ${files[i+1]}" 10 80
+      error_dialog "Failed copying ${files[i]} to ${files[i+1]}"
       return 1
     }
     progress=$((progress + step))
@@ -272,14 +372,15 @@ README
 }
 
 main() {
-  require_bins dialog lsblk mount findmnt install df find
-  command -v btrfs >/dev/null 2>&1 || true
+  require_bins
   if [ "$(id -u)" -ne 0 ]; then
-    iso_dialog "This installer must run as root (sudo)." "" 10 80
+    echo "This installer must run as root." >&2
     exit 1
   fi
 
-  trap 'cleanup_temp_iso_mount; cleanup_temp_roots' EXIT
+  show_detected_volumes
+
+  trap 'cleanup_temp_iso_mount; cleanup_mounts TEMP_MOUNTS' EXIT
 
   local root_override="${1:-}" realroot
   if [ -n "$root_override" ]; then
@@ -289,13 +390,13 @@ main() {
   fi
 
   if [ -z "$realroot" ]; then
-    iso_dialog "Could not detect a SteamOS root partition. Mount it manually and retry." "" 10 80
+    error_dialog "Could not detect a SteamOS root partition. Mount it manually and retry."
     exit 1
   fi
 
   local pretty_root
   pretty_root=$(format_display_path "$realroot")
-  iso_dialog "SteamOS root detected at $pretty_root." "" 8 80
+  info_dialog "SteamOS root detected at $pretty_root."
 
   if [ -d "$realroot$ISO_RELATIVE_PATH" ]; then
     if ! deck_dialog --yesno "Existing files found in $ISO_RELATIVE_PATH. Overwrite them?" 10 70; then
@@ -304,12 +405,12 @@ main() {
   fi
 
   if ! prepare_steamos_root_for_write "$realroot"; then
-    iso_dialog "Unable to obtain write access to $pretty_root.\nRun this installer as root (sudo) and make sure SteamOS read-only mode is disabled." "" 10 80
+    error_dialog "Unable to remount $pretty_root writable."
     exit 1
   fi
 
   if copy_iso_payload "$realroot"; then
-    iso_dialog "Secure Boot ISO files are ready under $(format_display_path "$realroot$ISO_RELATIVE_PATH")." "" 8 80
+    info_dialog "Secure Boot ISO files are ready under $(format_display_path "$realroot$ISO_RELATIVE_PATH")."
   else
     exit 1
   fi

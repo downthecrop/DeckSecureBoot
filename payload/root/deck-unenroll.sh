@@ -19,6 +19,7 @@ if [ "$CHANGED" -eq 1 ]; then
   mkdir -p "$(dirname "$PENDING_FLAG")"
   echo disable > "$PENDING_FLAG"
   echo "Secure Boot vars cleared. Reboot to confirm."
+  echo "To fully remove Deck SB, delete the Jump Loader entry from your EFI."
 else
   echo "No Secure Boot vars were cleared (nothing changed)."
 fi

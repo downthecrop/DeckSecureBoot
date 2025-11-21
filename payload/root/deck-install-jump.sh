@@ -9,8 +9,6 @@ OLD_EFI_LABEL="$DECK_SB_OLD_EFI_LABEL"  # legacy label to clean up
 NEW_EFI_LABEL="$DECK_SB_NEW_EFI_LABEL"
 DECK_SB_FILES_DIR="/root/deck-sb-files"
 JUMP_SOURCE="$DECK_SB_FILES_DIR/steamos-jump.signed.efi"
-WATCHDOG_SCRIPT_TEMPLATE="$DECK_SB_FILES_DIR/deck-sb-bootfix.sh"
-WATCHDOG_SERVICE_TEMPLATE="$DECK_SB_FILES_DIR/deck-sb-bootfix.service"
 CLOVER_ENTRY_TEMPLATE="$DECK_SB_FILES_DIR/clover-jump-entry.plist"
 DECK_SB_CFG_TEMPLATE="$DECK_SB_FILES_DIR/deck-sb.cfg.tmpl"
 DEFAULT_KERNEL_IMAGE="/boot/vmlinuz-linux-neptune-611"
@@ -22,7 +20,7 @@ BOOT_LABELS=("$NEW_EFI_LABEL" "$OLD_EFI_LABEL")
 ISO_MOUNT="/run/archiso/bootmnt"
 TMP_EFI_MOUNT_BASE="/run/deck-efi"
 TMP_LINUX_MOUNT_BASE="/run/deck-root"
-STEAMOS_ROOT_BASE="/run/deck-os"
+JUMP_STATE_FILE="${DECK_SB_JUMP_STATE_FILE:-/run/deck-sb/jump.state}"
 
 LINUX_FSTYPES='ext2|ext3|ext4|btrfs|xfs|f2fs'
 LINUX_GPT_GUIDS=(
@@ -30,8 +28,9 @@ LINUX_GPT_GUIDS=(
   44479540-F297-41B2-9AF7-D131D5F0458A
   4F68BCE3-E8CD-4DB1-96E7-FBCAF984B709
 )
+JUMP_STATE_FILE="${DECK_SB_JUMP_STATE_FILE:-/run/deck-sb/jump.state}"
 
-mkdir -p "$TMP_EFI_MOUNT_BASE" "$TMP_LINUX_MOUNT_BASE" "$STEAMOS_ROOT_BASE"
+mkdir -p "$TMP_EFI_MOUNT_BASE" "$TMP_LINUX_MOUNT_BASE"
 
 cleanup() {
   cleanup_mounts TEMP_MOUNTS
@@ -51,6 +50,26 @@ clean_source_path() {
 trim_config_value() {
   local val="$1"
   printf '%s\n' "$val" | awk '{sub(/[ \t]*\\$/, ""); sub(/^[ \t]+/, ""); sub(/[ \t]+$/, ""); print}'
+}
+
+record_jump_state() {
+  local path="$1" state_dir
+  state_dir=$(dirname "$JUMP_STATE_FILE")
+  mkdir -p "$state_dir" 2>/dev/null || true
+  if [ -n "$path" ]; then
+    printf '%s\n' "$path" > "$JUMP_STATE_FILE"
+  else
+    echo "none" > "$JUMP_STATE_FILE"
+  fi
+}
+
+read_jump_state() {
+  [ -f "$JUMP_STATE_FILE" ] || return 1
+  local state
+  state=$(tr -d '\r\n' < "$JUMP_STATE_FILE" 2>/dev/null || true)
+  [ -n "$state" ] || return 1
+  printf '%s\n' "$state"
+  return 0
 }
 
 parse_kernel_initrd_from_cfg() {
@@ -377,50 +396,6 @@ purge_existing_boot_entries() {
     esac
   done < <(efibootmgr 2>/dev/null || true)
 }
-
-# --- new: find actual SteamOS root and install a watchdog service there
-install_watchdog_into_root() {
-  local rootmp="$1"
-  local service_dir="$rootmp/etc/systemd/system"
-  local script_path="$service_dir/deck-sb-bootfix.sh"
-  local unit_path="$service_dir/deck-sb-bootfix.service"
-
-  local pretty_root
-  pretty_root=$(display_path "$rootmp")
-  deck_dialog --infobox "SteamOS root detected at $pretty_root. Checking write access..." 6 70
-
-  if ! prepare_steamos_root_for_write "$rootmp"; then
-    deck_dialog --msgbox "Unable to obtain write access to $pretty_root.\nRun this installer as root (sudo) and make sure SteamOS read-only mode is disabled." 10 80
-    WATCHDOG_ERROR_SHOWN=1
-    return 1
-  fi
-
-  mkdir -p "$service_dir" 2>/dev/null || return 1
-
-  if [ ! -f "$WATCHDOG_SCRIPT_TEMPLATE" ] || [ ! -f "$WATCHDOG_SERVICE_TEMPLATE" ]; then
-    deck_dialog --msgbox "Watchdog templates are missing from the live environment." 10 80
-    WATCHDOG_ERROR_SHOWN=1
-    return 1
-  fi
-
-  deck_dialog --infobox "Writing deck-sb-bootfix watchdog files into $pretty_root..." 6 70
-  if ! install -m 0755 "$WATCHDOG_SCRIPT_TEMPLATE" "$script_path"; then
-    deck_dialog --msgbox "Failed to copy deck-sb-bootfix.sh into $pretty_root." 10 80
-    WATCHDOG_ERROR_SHOWN=1
-    return 1
-  fi
-
-  if ! install -m 0644 "$WATCHDOG_SERVICE_TEMPLATE" "$unit_path"; then
-    deck_dialog --msgbox "Failed to copy deck-sb-bootfix.service into $pretty_root." 10 80
-    WATCHDOG_ERROR_SHOWN=1
-    return 1
-  fi
-
-  deck_dialog --msgbox "Created deck-sb-bootfix.sh and deck-sb-bootfix.service inside $pretty_root." 8 80
-
-  return 0
-}
-
 install_jump_loader() {
   local steamcl_path="$1"
   local grub_path="$2"
@@ -490,7 +465,6 @@ install_jump_loader() {
     purge_existing_boot_entries "$label"
   done
 
-
   deck_dialog --infobox "Adding UEFI boot entry..." 5 70
   if ! output=$(efibootmgr -c -d "$disk" -p "$partnum" -l "$efi_rel_path" -L "$NEW_EFI_LABEL" 2>&1); then
     deck_dialog --msgbox "efibootmgr failed:\n$output" 10 80
@@ -498,24 +472,21 @@ install_jump_loader() {
   fi
 
   deck_dialog --msgbox "Boot entry created:\n$output" 8 80
-
-  # --- best-effort persistence into real SteamOS root
-  local realroot
-  realroot=$(find_steamos_root_path "$STEAMOS_ROOT_BASE" "TEMP_MOUNTS" 2>/dev/null || true)
-  if [ -n "$realroot" ]; then
-    if ! install_watchdog_into_root "$realroot"; then
-      if [ "${WATCHDOG_ERROR_SHOWN:-0}" -ne 1 ]; then
-        deck_dialog --msgbox "EFI drop succeeded, but installing the SteamOS boot-fix service failed.\nYou can run the installer again from inside SteamOS to make it persistent." 12 80
-      fi
-    fi
-  else
-    deck_dialog --msgbox "EFI drop succeeded, but a SteamOS root could not be auto-detected.\nYou can run a small service installer inside SteamOS to keep the entry." 12 80
-  fi
+  record_jump_state "$custom_jump"
 }
 
 find_installed_jump() {
   local keep_mounts="${1:-0}"
   local attempt max_attempts=3
+  local cached
+
+  if cached=$(read_jump_state); then
+    if [ "$cached" = "none" ]; then
+      return 1
+    fi
+    printf '%s\n' "$cached"
+    return 0
+  fi
 
   for (( attempt=1; attempt<=max_attempts; attempt++ )); do
     # Use dedicated, temporary lists so detection doesn't disturb global mounts.
@@ -528,6 +499,7 @@ find_installed_jump() {
     local dir found
     for dir in "${_dirs[@]}"; do
       while IFS= read -r -d '' found; do
+        record_jump_state "$found"
         printf '%s\n' "$found"
         if [ "$keep_mounts" -eq 1 ]; then
           TEMP_MOUNTS+=("${_mounts[@]}")
@@ -544,6 +516,7 @@ find_installed_jump() {
     fi
   done
 
+  record_jump_state ""
   return 1
 }
 
@@ -553,6 +526,7 @@ remove_jump_loader() {
 
   if [ -z "$jump_path" ]; then
     deck_dialog --msgbox "No Deck SB jump loader was found to remove." 8 70
+    record_jump_state ""
     return 0
   fi
 
@@ -571,6 +545,7 @@ remove_jump_loader() {
   done
 
   deck_dialog --msgbox "Removed Deck SB jump loader and cleared matching UEFI boot entries." 9 80
+  record_jump_state ""
   return 0
 }
 
@@ -601,7 +576,6 @@ declare -a TEMP_MOUNTS=() SEARCH_DIRS=() BASE_CANDIDATES=() GRUB_CANDIDATES=()
 declare -A ADDED_DIRS=() SEEN_BASE=() SEEN_GRUB=()
 SELECTED_BASE=""
 SELECTED_GRUB=""
-WATCHDOG_ERROR_SHOWN=0
 
 trap cleanup EXIT
 if [ "${1:-}" = "--detect-installed" ]; then
