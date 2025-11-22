@@ -16,6 +16,7 @@ KEYS_DIR=${KEYS_DIR:-"$SCRIPT_DIR/keys"}
 FIXED_GUID="decdecde-dec0-4dec-adec-decdecdecdec"
 RESIGNER="$SCRIPT_DIR/resigner.sh"
 RESIGN_WARN='[!] ISO WILL NOT BOOT under your Secure Boot keys unless you run the resigner manually.'
+DECK_SB_DEBUG=${DECK_SB_DEBUG:-0}  # set to 1 to enable live ISO debug log/menu
 
 ISO_EXTRA_PKGS=(
   sbctl
@@ -45,6 +46,7 @@ echo "[+] workdir     : $WORKDIR"
 echo "[+] profile dir : $PROFILE_DIR"
 echo "[+] payload dir : $PAYLOAD_DIR"
 echo "[+] keys dir    : $KEYS_DIR"
+echo "[+] debug mode  : $DECK_SB_DEBUG"
 
 for dir in "$PROFILE_DIR" "$PAYLOAD_DIR" "$KEYS_DIR"; do
   if [ ! -d "$dir" ]; then
@@ -61,7 +63,18 @@ for key_file in "$KEYS_DIR/PK.key" "$KEYS_DIR/PK.pem"; do
 done
 
 # ---------------------------------------------------------------------------
-# 1) install host deps if missing
+# 2) set debug flag file (copied into airootfs)
+# ---------------------------------------------------------------------------
+DEBUG_FLAG="$PAYLOAD_DIR/root/.debug"
+if [ "$DECK_SB_DEBUG" -eq 1 ]; then
+  echo "[+] enabling Deck SB debug mode (logs/menu)"
+  touch "$DEBUG_FLAG"
+else
+  rm -f "$DEBUG_FLAG"
+fi
+
+# ---------------------------------------------------------------------------
+# 3) install host deps if missing
 # ---------------------------------------------------------------------------
 ensure_pkg() {
   local pkg="$1"
@@ -77,7 +90,7 @@ ensure_pkg sbctl
 ensure_pkg sbsigntools
 
 # ---------------------------------------------------------------------------
-# 2) prepare working profile
+# 4) prepare working profile
 # ---------------------------------------------------------------------------
 mkdir -p "$WORKDIR"
 cd "$WORKDIR"
@@ -91,7 +104,7 @@ cd "$PROFILENAME"
 cp "$PROFILE_DIR/profiledef.sh" profiledef.sh
 
 # ---------------------------------------------------------------------------
-# 4) package trimming / adding
+# 5) package trimming / adding
 # ---------------------------------------------------------------------------
 tmpfile=$(mktemp)
 cp packages.x86_64 "$tmpfile"
@@ -116,7 +129,7 @@ done
 mv "$tmpfile" packages.x86_64
 
 # ---------------------------------------------------------------------------
-# 5) UEFI/systemd-boot (with loader.conf timeout 0)
+# 6) UEFI/systemd-boot (with loader.conf timeout 0)
 # ---------------------------------------------------------------------------
 mkdir -p efiboot
 cp -r "$PROFILE_DIR/efiboot/." efiboot/
@@ -130,7 +143,7 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 6) ship payload (menus, helper scripts, units)
+# 7) ship payload (menus, helper scripts, units)
 # ---------------------------------------------------------------------------
 mkdir -p airootfs
 cp -a "$PAYLOAD_DIR"/. airootfs/
@@ -145,7 +158,7 @@ chmod +x \
   airootfs/root/deck-status.sh
 
 # ---------------------------------------------------------------------------
-# 7) baked keys (two places)
+# 8) baked keys (two places)
 # ---------------------------------------------------------------------------
 share_keys_dir=airootfs/usr/share/deck-sb/keys
 sbctl_keys_dir=airootfs/var/lib/sbctl/keys
@@ -166,7 +179,7 @@ mkdir -p airootfs/var/lib/sbctl
 echo -n "$FIXED_GUID" > airootfs/var/lib/sbctl/GUID
 
 # ---------------------------------------------------------------------------
-# 8) build ISO
+# 9) build ISO
 # ---------------------------------------------------------------------------
 if [ -d /out ]; then
   ISO_OUT_DIR=/out
@@ -184,7 +197,7 @@ echo "[+] build complete"
 echo "[+] ISO is at: ${ISO_PATH:-$ISO_OUT_DIR/*.iso}"
 
 # ---------------------------------------------------------------------------
-# 9) optional post-build resign
+# 10) optional post-build resign
 # ---------------------------------------------------------------------------
 if [ -n "${ISO_PATH:-}" ] && [ -f "$RESIGNER" ]; then
   echo "[+] found resigner at $RESIGNER - signing ISO EFI image..."

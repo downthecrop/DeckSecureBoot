@@ -4,13 +4,6 @@ set -euo pipefail
 # shellcheck disable=SC1091
 . /root/deck-env.sh
 
-if [ "$(id -u)" -ne 0 ]; then
-  echo "This needs to run as root (sbctl writes under /var/lib/sbctl)."
-  exit 1
-fi
-
-require_bins sbctl lsblk mount find findmnt
-
 FIND_TIMEOUT=${FIND_TIMEOUT:-15}
 TIMEOUT_BIN=$(command -v timeout || true)
 
@@ -48,7 +41,9 @@ display_path() {
 }
 
 progress_msg "Scanning disks for EFI files and kernels..."
-collect_device_search_dirs "SEARCH_DIRS" "ADDED_DIRS" "TEMP_MOUNTS" "$ISO_MOUNT" "$TMP_EFI_MOUNT_BASE" "$TMP_LINUX_MOUNT_BASE" progress_msg
+declare -A ISO_SKIP_MAP=()
+collect_iso_device_skip_map "ISO_SKIP_MAP"
+collect_device_search_dirs "SEARCH_DIRS" "ADDED_DIRS" "TEMP_MOUNTS" "$ISO_MOUNT" "$TMP_EFI_MOUNT_BASE" "$TMP_LINUX_MOUNT_BASE" progress_msg "ISO_SKIP_MAP"
 
 ALL=()
 

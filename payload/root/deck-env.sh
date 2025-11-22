@@ -10,6 +10,14 @@
 : "${DECK_SB_JUMP_STATE_FILE:=$DECK_SB_STATE_DIR/jump.state}"
 : "${STEAMOS_ROOT_BASE:=/run/deck-os}"
 : "${STEAMOS_BOOT_BASE:=/run/deck-boot}"
+# Preferred label for the live ISO; fallback labels keep backward compatibility.
+: "${DECK_SB_ISO_LABEL:=DECK_SB}"
+: "${DECK_SB_DEBUG_FLAG_FILE:=/root/.debug}"
+: "${DECK_SB_DEBUG:=0}"
+
+if [ -f "$DECK_SB_DEBUG_FLAG_FILE" ]; then
+  DECK_SB_DEBUG=1
+fi
 
 export DECK_SB_BACKTITLE
 export DECK_SB_KEYDIR
@@ -21,18 +29,9 @@ export DECK_SB_STATE_DIR
 export DECK_SB_JUMP_STATE_FILE
 export STEAMOS_ROOT_BASE
 export STEAMOS_BOOT_BASE
-
-require_bins() {
-  # Verify required binaries exist; exit with a helpful list if any are missing.
-  local missing=()
-  for bin in "$@"; do
-    command -v "$bin" >/dev/null 2>&1 || missing+=("$bin")
-  done
-  if [ "${#missing[@]}" -ne 0 ]; then
-    printf 'Missing required utilities: %s\n' "${missing[*]}" >&2
-    exit 1
-  fi
-}
+export DECK_SB_ISO_LABEL
+export DECK_SB_DEBUG_FLAG_FILE
+export DECK_SB_DEBUG
 
 sanitize_printable() {
   LC_ALL=C tr -cd '\11\12\15\40-\176'
@@ -171,8 +170,11 @@ seed_default_search_dirs() {
 
 collect_device_search_dirs() {
   local list_ref="$1" seen_ref="$2" temps_ref="$3" iso_mount="$4"
-  local efi_base="$5" linux_base="$6" progress_hook="${7:-}"
+  local efi_base="$5" linux_base="$6" progress_hook="${7:-}" skip_map_ref="${8:-}"
   declare -n _list="$list_ref" _seen="$seen_ref" _temps="$temps_ref"
+  if [ -n "$skip_map_ref" ]; then
+    declare -n _skip="$skip_map_ref"
+  fi
 
   local linux_fstypes="${LINUX_FSTYPES:-ext2|ext3|ext4|btrfs|xfs|f2fs}"
   local parttype guid lowerfstype mount_base add_boot_dir target_mount
@@ -183,7 +185,22 @@ collect_device_search_dirs() {
 
   while read -r dev fstype parttype target_mount; do
     [[ -b "$dev" ]] || continue
+    if [ -n "$skip_map_ref" ] && [ -n "${_skip[$dev]:-}" ]; then
+      continue
+    fi
+    # Skip known live media by label or iso9660 to avoid tearing down the install USB.
+    local dev_label=""
+    dev_label=$(lsblk -nrpo LABEL "$dev" 2>/dev/null | head -n1 || true)
+    local iso_label
+    for iso_label in "${DECK_SB_ISO_LABEL:-}" "DECK_SB" "DECK SB"; do
+      if [ -n "$iso_label" ] && [ "$dev_label" = "$iso_label" ]; then
+        continue 2
+      fi
+    done
     lowerfstype="${fstype,,}"
+    if [ "$lowerfstype" = "iso9660" ]; then
+      continue
+    fi
     parttype="${parttype^^}"
     mount_base=""
     add_boot_dir=0
@@ -204,6 +221,14 @@ collect_device_search_dirs() {
     fi
 
     [ -n "$mount_base" ] || continue
+
+    if [ -z "$target_mount" ] || [ "$target_mount" = "-" ]; then
+      local existing_mount
+      existing_mount=$(findmnt -rn -S "$dev" -o TARGET 2>/dev/null | head -n1 || true)
+      if [ -n "$existing_mount" ] && [ "$existing_mount" != "-" ]; then
+        target_mount="$existing_mount"
+      fi
+    fi
 
     if [ -z "$target_mount" ] || [ "$target_mount" = "-" ]; then
       target_mount="$mount_base/$(basename "$dev")"
@@ -229,6 +254,55 @@ collect_device_search_dirs() {
       fi
     fi
   done < <(lsblk -rpno NAME,FSTYPE,PARTTYPE,MOUNTPOINT)
+}
+
+collect_iso_device_skip_map() {
+  # Populate an associative array keyed by device paths that should be ignored
+  # (e.g., the live ISO device) to avoid being mounted/unmounted during scans.
+  local dest_ref="$1"
+  if ! declare -p "$dest_ref" 2>/dev/null | grep -q 'declare \-A'; then
+    eval "declare -gA $dest_ref=()"
+  fi
+  declare -n _skip="$dest_ref"
+  _skip=()
+
+  local iso_paths=(
+    /run/archiso/bootmnt
+    /run/initramfs/archiso/bootmnt
+  )
+  if [ -n "${DECK_SB_ISO_ROOT:-}" ]; then
+    iso_paths+=("$DECK_SB_ISO_ROOT")
+  fi
+
+  local path src
+  for path in "${iso_paths[@]}"; do
+    [ -n "$path" ] || continue
+    src=$(findmnt -rno SOURCE --target "$path" 2>/dev/null || true)
+    src=${src%%[*}
+    if [ -n "$src" ]; then
+      _skip["$src"]=1
+      local resolved
+      resolved=$(readlink -f "$src" 2>/dev/null || true)
+      [ -n "$resolved" ] && _skip["$resolved"]=1
+    fi
+  done
+
+  local labels=("$DECK_SB_ISO_LABEL" "DECK_SB" "DECK SB")
+  local line dev label candidate
+  while IFS= read -r line; do
+    dev=${line#NAME=\"}; dev=${dev%%\"*}
+    label=${line#*LABEL=\"}; label=${label%%\"*}
+    [ -n "$dev" ] || continue
+    for candidate in "${labels[@]}"; do
+      [ -n "$candidate" ] || continue
+      if [ "$label" = "$candidate" ]; then
+        _skip["$dev"]=1
+        local resolved
+        resolved=$(readlink -f "$dev" 2>/dev/null || true)
+        [ -n "$resolved" ] && _skip["$resolved"]=1
+      fi
+    done
+  done < <(lsblk -rpno NAME,LABEL -P 2>/dev/null || true)
 }
 
 locate_steamos_root_within() {
@@ -376,6 +450,8 @@ ensure_rw_mount() {
   fi
   if [[ "$opts" == *ro* ]]; then
     mount -o remount,rw "$mp" 2>/dev/null || return 1
+    opts=$(findmnt -nro OPTIONS --target "$mp" 2>/dev/null || true)
+    [[ "$opts" == *ro* ]] && return 1
   fi
   return 0
 }

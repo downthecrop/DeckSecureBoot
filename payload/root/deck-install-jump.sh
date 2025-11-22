@@ -38,6 +38,7 @@ cleanup() {
 display_path() {
   format_display_path "$1" "$TMP_EFI_MOUNT_BASE" "$TMP_LINUX_MOUNT_BASE"
 }
+log_debug() { :; }
 
 clean_source_path() {
   local src="$1"
@@ -142,7 +143,10 @@ update_kernel_initrd_from_grub() {
 scan_devices() {
   seed_default_search_dirs "SEARCH_DIRS" "ADDED_DIRS" "$ISO_MOUNT"
   deck_dialog --infobox "Scanning disks for SteamOS loaders..." 5 70
-  collect_device_search_dirs "SEARCH_DIRS" "ADDED_DIRS" "TEMP_MOUNTS" "$ISO_MOUNT" "$TMP_EFI_MOUNT_BASE" "$TMP_LINUX_MOUNT_BASE"
+  declare -A ISO_SKIP_MAP=()
+  collect_iso_device_skip_map "ISO_SKIP_MAP"
+  log_debug "scan_devices: ISO skip entries: ${!ISO_SKIP_MAP[*]}"
+  collect_device_search_dirs "SEARCH_DIRS" "ADDED_DIRS" "TEMP_MOUNTS" "$ISO_MOUNT" "$TMP_EFI_MOUNT_BASE" "$TMP_LINUX_MOUNT_BASE" "" "ISO_SKIP_MAP"
 }
 
 collect_base_candidates() {
@@ -492,9 +496,12 @@ find_installed_jump() {
     # Use dedicated, temporary lists so detection doesn't disturb global mounts.
     local -a _mounts=() _dirs=()
     local -A _added=()
+    local -A _skip_iso=()
+
+    collect_iso_device_skip_map "_skip_iso"
 
     seed_default_search_dirs "_dirs" "_added" "$ISO_MOUNT"
-    collect_device_search_dirs "_dirs" "_added" "_mounts" "$ISO_MOUNT" "$TMP_EFI_MOUNT_BASE" "$TMP_LINUX_MOUNT_BASE"
+    collect_device_search_dirs "_dirs" "_added" "_mounts" "$ISO_MOUNT" "$TMP_EFI_MOUNT_BASE" "$TMP_LINUX_MOUNT_BASE" "" "_skip_iso"
 
     local dir found
     for dir in "${_dirs[@]}"; do
@@ -550,13 +557,6 @@ remove_jump_loader() {
 }
 
 main() {
-  require_bins dialog lsblk mount findmnt efibootmgr install find blkid awk
-
-  if [ "$(id -u)" -ne 0 ]; then
-    deck_dialog --msgbox "This installer must be run as root." 10 80
-    exit 1
-  fi
-
   if [ ! -f "$JUMP_SOURCE" ]; then
     deck_dialog --msgbox "Jump loader $JUMP_SOURCE is missing from the live environment." 10 80
     exit 1
@@ -584,7 +584,6 @@ if [ "${1:-}" = "--detect-installed" ]; then
   fi
   exit 1
 elif [ "${1:-}" = "--remove" ]; then
-  require_bins dialog lsblk mount findmnt efibootmgr install find blkid awk
   remove_jump_loader
 else
   main
