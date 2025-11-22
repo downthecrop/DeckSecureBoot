@@ -88,6 +88,13 @@ is_fat_fstype() {
   [[ "${fstype,,}" =~ ^(vfat|fat|fat16|fat32)$ ]]
 }
 
+mount_opts_has_flag() {
+  # Check for a comma-delimited mount option (avoid substring matches like errors=remount-ro).
+  local opts="${1// /}" flag="$2"
+  [[ -n "$opts" ]] || return 1
+  [[ ",$opts," == *",$flag,"* ]]
+}
+
 run_find_timeout() {
   # find wrapper with optional timeout support (uses FIND_TIMEOUT/TIMEOUT_BIN if set)
   local dir="$1" maxdepth="$2"
@@ -443,15 +450,28 @@ is_steamos_tree() {
 
 ensure_rw_mount() {
   local mp="$1"
-  local opts
+  local src opts fstype
+  src=$(findmnt -nro SOURCE --target "$mp" 2>/dev/null || true)
   opts=$(findmnt -nro OPTIONS --target "$mp" 2>/dev/null || true)
+  opts="${opts// /}"
+  fstype=$(findmnt -nr -T "$mp" -o FSTYPE 2>/dev/null || true)
   if [ -z "$opts" ]; then
     return 0
   fi
-  if [[ "$opts" == *ro* ]]; then
-    mount -o remount,rw "$mp" 2>/dev/null || return 1
+  if mount_opts_has_flag "$opts" "ro"; then
+    mount -o remount,rw "$mp" 2>/dev/null || true
+    if [ -n "$src" ]; then
+      mount -o remount,rw "$src" "$mp" 2>/dev/null || true
+    fi
     opts=$(findmnt -nro OPTIONS --target "$mp" 2>/dev/null || true)
-    [[ "$opts" == *ro* ]] && return 1
+    opts="${opts// /}"
+    if mount_opts_has_flag "$opts" "ro" && [ -n "$src" ] && [ -b "$src" ] && [[ "${fstype,,}" != "iso9660" ]]; then
+      umount "$mp" 2>/dev/null || true
+      mount -o rw "$src" "$mp" 2>/dev/null || true
+    fi
+    opts=$(findmnt -nro OPTIONS --target "$mp" 2>/dev/null || true)
+    opts="${opts// /}"
+    mount_opts_has_flag "$opts" "ro" && return 1
   fi
   return 0
 }
@@ -462,9 +482,10 @@ ensure_rw_for_path() {
   local mp opts
   mp=$(findmnt -rno TARGET -T "$target" 2>/dev/null || true)
   opts=$(findmnt -rno OPTIONS -T "$target" 2>/dev/null || true)
+  opts="${opts// /}"
   [ -n "$mp" ] || return 0
 
-  if [[ "$opts" == *ro* ]]; then
+  if mount_opts_has_flag "$opts" "ro"; then
     if ensure_rw_mount "$mp"; then
       return 0
     fi
