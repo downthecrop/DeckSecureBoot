@@ -147,21 +147,24 @@ if search --file $deck_iso_file --set=deck_iso_probe; then
             set deck_iso_kernel="/usr/local/share/deck-sb/arch/boot/x86_64/vmlinuz-linux"
             set deck_iso_initrd="/usr/local/share/deck-sb/arch/boot/x86_64/initramfs-linux.img"
             set deck_iso_sfs="/usr/local/share/deck-sb/arch/x86_64/airootfs.sfs"
-            check_iso_file() {
-                set _label="$1"
-                set _path="$2"
-                if [ -f "($deck_iso)$_path" ]; then
-                    echo "  $_label: ($deck_iso)$_path [OK]"
-                else
-                    echo "  $_label: ($deck_iso)$_path [MISSING]"
-                fi
-            }
-            check_iso_file 'kernel' "$deck_iso_kernel"
-            check_iso_file 'initrd' "$deck_iso_initrd"
+            if [ -f "($deck_iso)$deck_iso_kernel" ]; then
+                echo "  kernel: ($deck_iso)$deck_iso_kernel [OK]"
+            else
+                echo "  kernel: ($deck_iso)$deck_iso_kernel [MISSING]"
+            fi
+            if [ -f "($deck_iso)$deck_iso_initrd" ]; then
+                echo "  initrd: ($deck_iso)$deck_iso_initrd [OK]"
+            else
+                echo "  initrd: ($deck_iso)$deck_iso_initrd [MISSING]"
+            fi
             echo "  archisobasedir=usr/local/share/deck-sb/arch"
             echo "  archisodevice=$deck_iso_devpath"
             echo "  img_dev=$deck_iso_devpath"
-            check_iso_file 'img_loop' "$deck_iso_sfs"
+            if [ -f "($deck_iso)$deck_iso_sfs" ]; then
+                echo "  img_loop: ($deck_iso)$deck_iso_sfs [OK]"
+            else
+                echo "  img_loop: ($deck_iso)$deck_iso_sfs [MISSING]"
+            fi
             sleep 3
             linux ($deck_iso)/usr/local/share/deck-sb/arch/boot/x86_64/vmlinuz-linux archisobasedir=usr/local/share/deck-sb/arch archisodevice=$deck_iso_devpath img_dev=$deck_iso_devpath img_loop=/usr/local/share/deck-sb/arch/x86_64/airootfs.sfs copytoram=n
             initrd ($deck_iso)/usr/local/share/deck-sb/arch/boot/x86_64/initramfs-linux.img
