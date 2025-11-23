@@ -3,7 +3,12 @@
 set debug=video,gfxterm,font
 
 # --- Video & terminal ---
+insmod efi_gop
+insmod efi_uga
+insmod video_bochs
+insmod video_cirrus
 insmod all_video
+
 insmod gfxterm
 insmod font
 

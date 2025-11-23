@@ -234,28 +234,46 @@ write_cfg_to_custom_dir() {
     fi
   done < <(lsblk -rpno NAME,FSTYPE,PKNAME)
 
-  if [ -n "$root_uuid" ]; then
+if [ -n "$root_uuid" ]; then
     kernel_block=$(cat <<EOF
     search --no-floppy --fs-uuid --set=root $root_uuid
     linux ${STEAMOS_KERNEL_IMAGE} \
         console=tty1 \
         rd.luks=0 rd.lvm=0 rd.md=0 rd.dm=0 \
-        rd.systemd.gpt_auto=0 \
-        rd.steamos.efi=$grub_dev \
-        loglevel=3 \
+        rd.systemd.gpt_auto=no \
+        log_buf_len=4M \
+        amd_iommu=off \
+        amdgpu.lockup_timeout=5000,10000,10000,5000 \
+        ttm.pages_min=2097152 \
+        amdgpu.sched_hw_submission=4 \
+        audit=0 \
+        fsck.mode=auto fsck.repair=preen \
+        fbcon=rotate:1 \
+        loglevel=3 quiet splash \
         plymouth.ignore-serial-consoles \
-        fbcon=rotate:1
+        fbcon=vc:4-6 \
+        noresume \
+        rd.steamos.efi=$grub_dev
     initrd ${STEAMOS_INITRD_IMAGES}
 EOF
 )
-  else
+else
     kernel_block=$(cat <<EOF
-    linux ${STEAMOS_KERNEL_IMAGE} rd.steamos.efi=$grub_dev \
-        fbcon=rotate:1
+    linux ${STEAMOS_KERNEL_IMAGE} \
+        console=tty1 \
+        rd.systemd.gpt_auto=no \
+        log_buf_len=4M \
+        audit=0 \
+        fbcon=rotate:1 \
+        loglevel=3 quiet splash \
+        plymouth.ignore-serial-consoles \
+        fbcon=vc:4-6 \
+        noresume \
+        rd.steamos.efi=$grub_dev
     initrd ${STEAMOS_INITRD_IMAGES}
 EOF
 )
-  fi
+fi
 
   {
     while IFS= read -r line || [ -n "$line" ]; do

@@ -11,6 +11,7 @@ ISO_INSTALL_DIR="${DECK_SB_INSTALL_DIR:-arch}"
 TEMP_ISO_MOUNT=""
 declare -a ISO_TEMP_MOUNTS=()
 REQUIRED_MB=400
+NOTHING=" "
 ISO_DEBUG_LOG="${DECK_SB_ISO_DEBUG_LOG:-/run/deck-sb/install-iso-debug.log}"
 
 log_debug() {
