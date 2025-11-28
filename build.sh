@@ -9,7 +9,10 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 WORKDIR=${WORKDIR:-/root/archlive}
 PROFILENAME=${PROFILENAME:-steamdeck-sb}
-PROFILE_SRC=/usr/share/archiso/configs/baseline
+# Default to the ArchISO baseline profile (full live boot skeleton) and layer our
+# slim overrides on top. Set PROFILE_SRC="$SCRIPT_DIR/profile" to force the local
+# bare profile, but baseline is safer for boot.
+PROFILE_SRC=${PROFILE_SRC:-/usr/share/archiso/configs/baseline}
 PROFILE_DIR=${PROFILE_DIR:-"$SCRIPT_DIR/profile"}
 PAYLOAD_DIR=${PAYLOAD_DIR:-"$SCRIPT_DIR/payload"}
 KEYS_DIR=${KEYS_DIR:-"$SCRIPT_DIR/keys"}
@@ -39,6 +42,7 @@ ISO_UNWANTED_PKGS=(
   qemu-guest-agent open-vm-tools hyperv virtualbox-guest-utils-nox
   memtest86+ memtest86+-efi edk2-shell
   zsh grml-zsh-config livecd-sounds terminus-font
+  intel-ucode sof-firmware xf86-video-intel vulkan-intel intel-media-driver libva-intel-driver
 )
 
 echo "[+] Steam Deck SB ISO build (Beta 1.7)"
@@ -54,6 +58,11 @@ for dir in "$PROFILE_DIR" "$PAYLOAD_DIR" "$KEYS_DIR"; do
     exit 1
   fi
 done
+
+if [ ! -d "$PROFILE_SRC" ]; then
+  echo "[!] profile source missing: $PROFILE_SRC"
+  exit 1
+fi
 
 for key_file in "$KEYS_DIR/PK.key" "$KEYS_DIR/PK.pem"; do
   if [ ! -f "$key_file" ]; then
