@@ -602,13 +602,13 @@ sign_detected_kernels() {
     return 0
   fi
 
-  local summary="" success=0 already=0 failed=0
-  local kernel display RAW_OUTPUT STATUS OUTPUT
+  local summary="" failures="" success=0 already=0 failed=0
+  local kernel display RAW_OUTPUT STATUS OUTPUT ERR
 
   for kernel in "${KERNEL_CANDIDATES[@]}"; do
     display=$(display_path "$kernel")
     if ! ERR=$(ensure_rw_for_path "$kernel"); then
-      summary+="$display: SKIPPED (read-only)\n${ERR:-Unable to access target.}\n\n"
+      failures+="$display: SKIPPED (read-only)\n${ERR:-Unable to access target.}\n\n"
       failed=$((failed + 1))
       continue
     fi
@@ -625,20 +625,25 @@ sign_detected_kernels() {
       summary+="$display: already signed\n"
       already=$((already + 1))
     else
-      summary+="$display: FAILED (exit $STATUS)\n$OUTPUT\n\n"
+      failures+="$display: FAILED (exit $STATUS)\n$OUTPUT\n\n"
       failed=$((failed + 1))
     fi
   done
 
   summary=$(printf '%s' "$summary" | sanitize_printable)
-  local heading
-  if [ $failed -eq 0 ]; then
+  failures=$(printf '%s' "$failures" | sanitize_printable)
+
+  local heading body
+  if [ "$success" -gt 0 ]; then
     heading="Kernel signing summary (signed: $success, already: $already)"
+    body="$summary"
   else
     heading="Kernel signing summary (signed: $success, already: $already, failed: $failed)"
+    body="${summary}${failures}"
   fi
 
-  deck_dialog --msgbox "$(printf '%s\n\n%s' "$heading" "$summary")" 20 90
+  [ -n "$body" ] || body="No kernels were processed."
+  deck_dialog --msgbox "$(printf '%s\n\n%s' "$heading" "$body")" 20 90
 }
 
 main() {

@@ -3,7 +3,7 @@ set -euo pipefail
 
 # ---------------------------------------------------------------------------
 # Steam Deck Secure Boot ISO builder (plain ncurses)
-# Version: Beta 1.7
+# Version: Beta 1.8
 # ---------------------------------------------------------------------------
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
@@ -45,7 +45,7 @@ ISO_UNWANTED_PKGS=(
   intel-ucode sof-firmware xf86-video-intel vulkan-intel intel-media-driver libva-intel-driver
 )
 
-echo "[+] Steam Deck SB ISO build (Beta 1.7)"
+echo "[+] Steam Deck SB ISO build (Beta 1.8)"
 echo "[+] workdir     : $WORKDIR"
 echo "[+] profile dir : $PROFILE_DIR"
 echo "[+] payload dir : $PAYLOAD_DIR"
@@ -85,18 +85,9 @@ fi
 # ---------------------------------------------------------------------------
 # 3) install host deps if missing
 # ---------------------------------------------------------------------------
-ensure_pkg() {
-  local pkg="$1"
-  pacman -Sy
-  if ! pacman -Qi "$pkg" >/dev/null 2>&1; then
-    pacman -Sy --noconfirm "$pkg"
-  fi
-}
-
-ensure_pkg archiso
-ensure_pkg grub
-ensure_pkg sbctl
-ensure_pkg sbsigntools
+HOST_DEPS=(archiso grub sbctl sbsigntools)
+echo "[+] installing host build deps: ${HOST_DEPS[*]}"
+pacman -Sy --noconfirm --needed "${HOST_DEPS[@]}"
 
 # ---------------------------------------------------------------------------
 # 4) prepare working profile

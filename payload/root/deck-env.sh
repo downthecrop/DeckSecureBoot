@@ -567,11 +567,37 @@ prepare_steamos_root_for_write() {
   fi
 
   if [ -x "$rootmp/usr/bin/steamos-readonly" ]; then
-    chroot "$rootmp" /usr/bin/steamos-readonly disable 2>/dev/null || true
-    if ensure_rw_mount "$rootmp"; then
-      return 0
-    fi
+    run_steamos_readonly_disable "$rootmp"
+    ensure_rw_mount "$rootmp" && return 0
   fi
 
   return 1
+}
+
+run_steamos_readonly_disable() {
+  # Run steamos-readonly disable with minimal binds (proc/sys/dev) so it can remount cleanly
+  # without dragging in the live ISO's /run mounts.
+  local rootmp="$1"
+  [ -x "$rootmp/usr/bin/steamos-readonly" ] || return 1
+
+  local -a binds=()
+  local src dest
+  for src in /proc /sys /dev; do
+    dest="$rootmp$src"
+    mkdir -p "$dest"
+    if ! mountpoint -q "$dest" 2>/dev/null; then
+      if mount --rbind "$src" "$dest"; then
+        mount --make-rslave "$dest" 2>/dev/null || true
+        binds+=("$dest")
+      fi
+    fi
+  done
+
+  chroot "$rootmp" /usr/bin/steamos-readonly disable 2>/dev/null || true
+
+  local i
+  for (( i=${#binds[@]}-1; i>=0; i-- )); do
+    umount -R "${binds[$i]}" 2>/dev/null || umount "${binds[$i]}" 2>/dev/null || true
+  done
+  return 0
 }

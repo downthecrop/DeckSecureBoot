@@ -5,7 +5,8 @@ chmod +x /root/menu.sh \
   /root/deck-unenroll.sh \
   /root/deck-sign-efi.sh \
   /root/deck-install-jump.sh \
-  /root/deck-status.sh
+  /root/deck-status.sh \
+  /root/deck-chroot-steamos.sh
 
 systemctl enable deck-startup.service
 

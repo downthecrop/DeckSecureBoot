@@ -351,7 +351,7 @@ prepare_steamos_root_for_write() {
     fi
   fi
   if [ -x "$rootmp/usr/bin/steamos-readonly" ]; then
-    chroot "$rootmp" /usr/bin/steamos-readonly disable 2>/dev/null || true
+    run_steamos_readonly_disable "$rootmp"
     ensure_rw_mount "$rootmp" && return 0
   fi
   return 1
@@ -540,6 +540,33 @@ copy_iso_payload() {
   local dest="$rootmp$ISO_RELATIVE_PATH"
   mkdir -p "$dest"
 
+  if ! ensure_rw_for_path "$dest"; then
+    run_steamos_readonly_disable "$rootmp"
+  fi
+
+  if ! ensure_rw_for_path "$dest"; then
+    local mi
+    mi=$(findmnt -rno SOURCE,TARGET,OPTIONS -T "$dest" 2>/dev/null || true)
+    log_debug "copy_iso_payload: dest not writable ($dest) mountinfo=${mi:-unknown}"
+    error_dialog "Target is still read-only at $(format_display_path "$dest").\nMount info: ${mi:-unknown}"
+    return 1
+  fi
+
+  local testfile="$dest/.deck-sb-write-test"
+  if ! touch "$testfile" 2>/dev/null; then
+    ensure_rw_mount "$rootmp" || true
+    run_steamos_readonly_disable "$rootmp"
+    if ! touch "$testfile" 2>/dev/null; then
+      local mi
+      mi=$(findmnt -rno SOURCE,TARGET,OPTIONS -T "$dest" 2>/dev/null || true)
+      log_debug "copy_iso_payload: write test failed at $testfile mountinfo=${mi:-unknown}"
+      error_dialog "Failed to obtain write access at $(format_display_path "$dest").\nMount info: ${mi:-unknown}"
+      return 1
+    fi
+  fi
+  rm -f "$testfile" 2>/dev/null || true
+  log_debug "copy_iso_payload: dest mount $(findmnt -rno SOURCE,TARGET,OPTIONS -T "$dest" 2>/dev/null | tr -d '\n')"
+
   local avail
   avail=$(df -m --output=avail "$dest" | tail -n1 | tr -d ' ')
   if [ -n "$avail" ] && [ "$avail" -lt "$REQUIRED_MB" ]; then
@@ -592,14 +619,30 @@ copy_iso_payload() {
   local i progress=0 step=$(( 100 / (${#files[@]} / 2) ))
   for ((i=0; i<${#files[@]}; i+=2)); do
     printf '%s\n' "$progress" >&3
-    install -m 0644 "${files[i]}" "${files[i+1]}" || {
-      printf '100\n' >&3
-      exec 3>&-
-      wait "$gauge_pid" 2>/dev/null || true
-      rm -f "$fifo"
-      error_dialog "Failed copying ${files[i]} to ${files[i+1]}"
-      return 1
-    }
+    local install_err="" retry_err="" cp_err="" mi=""
+    if ! install_err=$(install -m 0644 "${files[i]}" "${files[i+1]}" 2>&1); then
+      mi=$(findmnt -rno SOURCE,TARGET,OPTIONS -T "${files[i+1]}" 2>/dev/null || true)
+      log_debug "copy_iso_payload: install failed ${files[i]} -> ${files[i+1]} mountinfo=${mi:-unknown} err=${install_err:-none}"
+
+      ensure_rw_mount "$rootmp" || true
+      run_steamos_readonly_disable "$rootmp"
+      if retry_err=$(install -m 0644 "${files[i]}" "${files[i+1]}" 2>&1); then
+        log_debug "copy_iso_payload: install retry succeeded after rw enforcement ${files[i]} -> ${files[i+1]}"
+      else
+        log_debug "copy_iso_payload: install retry failed err=${retry_err:-none}"
+        if cp_err=$(cp --reflink=auto --remove-destination "${files[i]}" "${files[i+1]}" 2>&1); then
+          log_debug "copy_iso_payload: cp fallback succeeded ${files[i]} -> ${files[i+1]} (install err: ${install_err:-none}, retry err: ${retry_err:-none})"
+        else
+          log_debug "copy_iso_payload: cp fallback failed err=${cp_err:-none}"
+          printf '100\n' >&3
+          exec 3>&-
+          wait "$gauge_pid" 2>/dev/null || true
+          rm -f "$fifo"
+          error_dialog "$(printf 'Failed copying %s to %s.\nMount info: %s\ninstall: %s\nretry: %s\ncp: %s\n' "${files[i]}" "${files[i+1]}" "${mi:-unknown}" "${install_err:-none}" "${retry_err:-none}" "${cp_err:-none}")"
+          return 1
+        fi
+      fi
+    fi
     progress=$((progress + step))
   done
   printf '100\n' >&3
